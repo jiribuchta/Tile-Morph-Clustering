@@ -3,8 +3,8 @@ defaults:
   - logger: mlflow
   - _self_
 
-data_path: /mnt/bioptic_tree  # WSI root (slides.parquet `path` column, *.mrxs)
-project_path: /mnt/projects/mammaprint  # TODO: verify the cluster project folder
+data_path: /mnt/data/MOU/breast/mammaprint # WSI root (slides.parquet `path` column, *.mrxs)
+project_path: /mnt/projects/breast_cancer/tile_morph_clustering  # TODO: verify the cluster project folder
 
 metadata:
   experiment_name: Breast Cancer  # MLflow exp 61 on the trusted server
