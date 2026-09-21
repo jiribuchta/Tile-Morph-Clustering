@@ -26,6 +26,8 @@ Data server comes from MLFLOW_TRACKING_URI (see MLFLOW.md).
 
 import json
 import os
+import sys
+import time
 from pathlib import Path
 
 import hydra
@@ -94,6 +96,10 @@ def stream_rows(parts, with_embedding):
 
 
 def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
+    sys.stdout.reconfigure(
+        line_buffering=True
+    )  # job logs are not a tty; keep prints live
+    t0 = time.monotonic()
     out = Path(config.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -120,7 +126,11 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
     # ---- pass 1: count eligible rows per slide (cheap columns only)
     print("pass 1: counting eligible tiles per slide...")
     eligible = {}  # slide_id(hex) -> n
+    cur = None
     for _name, df, _ in stream_rows(parts, with_embedding=False):
+        if _name != cur:
+            cur = _name
+            print(f"  pass1 {_name} ({time.monotonic() - t0:.0f}s)")
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
         for sid, ok in zip(df["slide_id"], m, strict=True):
             if ok:
@@ -143,7 +153,13 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
     # ---- pass 2: keep rows (stride), read embeddings only here
     print("pass 2: collecting embeddings...")
     X_rows, meta_rows = [], []
+    kept, cur = 0, None
     for _name, df, emb in stream_rows(parts, with_embedding=True):
+        if _name != cur:
+            if cur is not None:
+                print(f"  pass2 {cur} done, kept {kept} ({time.monotonic() - t0:.0f}s)")
+            cur = _name
+            print(f"  pass2 {_name} ({time.monotonic() - t0:.0f}s)")
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
         if not m.any():
             continue
@@ -168,9 +184,12 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
                         float(df["tissue_roi_percentage"].iloc[i]),
                     )
                 )
+                kept += 1
                 p[3] += 1
             p[4] += 1
-    print(f"  collected {len(X_rows)} tile embeddings")
+    if cur is not None:
+        print(f"  pass2 {cur} done, kept {kept} ({time.monotonic() - t0:.0f}s)")
+    print(f"  collected {len(X_rows)} tile embeddings ({time.monotonic() - t0:.0f}s)")
 
     if not X_rows:
         raise SystemExit("no tiles collected")
@@ -187,7 +206,10 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
 
-    print(f"fitting KMeans k={config.k} n_init={config.n_init} on {X.shape}")
+    print(
+        f"fitting KMeans k={config.k} n_init={config.n_init} on {X.shape} "
+        f"({time.monotonic() - t0:.0f}s in)"
+    )
     km = KMeans(
         n_clusters=config.k, n_init=config.n_init, random_state=config.seed
     ).fit(X)
@@ -283,7 +305,7 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
         }
     )
 
-    print(f"wrote: {out}")
+    print(f"wrote: {out} ({time.monotonic() - t0:.0f}s total)")
     print("clusters by n_tiles (top 10):")
     top = sorted(summary.items(), key=lambda kv: -kv[1]["n_tiles"])[:10]
     for c, s in top:
