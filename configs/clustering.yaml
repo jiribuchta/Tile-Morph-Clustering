@@ -1,0 +1,25 @@
+defaults:
+  - base
+  - _self_
+
+out: ???
+
+k: 32
+n_init: 4
+tiles_per_slide: 256
+min_tissue: 0.05
+parts: 0  # max tile parts to process (0 = all)
+seed: 0
+
+mlflow_artifact_path: clustering
+
+metadata:
+  run_name: Clustering ${data.name}
+  description: Unsupervised KMeans on L2-normalized Virchow2 tile embeddings, stride-sampled per slide
+  hyperparams:
+    k: ${k}
+    n_init: ${n_init}
+    tiles_per_slide: ${tiles_per_slide}
+    min_tissue: ${min_tissue}
+    parts: ${parts}
+    seed: ${seed}

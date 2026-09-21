@@ -1,0 +1,14 @@
+# @package data
+# Virchow2 tile-embedding merge run (verified 2026-09-20, exp 61 "Breast Cancer").
+# WARNING: these embeddings failed verification (5/5 slides) on 2026-09-20 and are
+# being regenerated - treat everything computed from them as disposable until the
+# new merge run lands. Add a second dataset file pointing at the new run.
+# mlflow-artifacts URIs resolve against MLFLOW_TRACKING_URI.
+name: mmci_b20_24
+paths:
+  # path to a locally-sharded folder (tiles/ + slides/slides.parquet);
+  # if set, takes precedence over mlflow_uris
+  local: null
+mlflow_uris:
+  tiles: mlflow-artifacts:/61/e77013b39ac245feacb9d5451c91f646/artifacts/MMCI B20-24 Train_sharded/tiles
+  slides: mlflow-artifacts:/61/e77013b39ac245feacb9d5451c91f646/artifacts/MMCI B20-24 Train_sharded/slides/slides.parquet
