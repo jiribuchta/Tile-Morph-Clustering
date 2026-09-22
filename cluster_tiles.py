@@ -81,17 +81,27 @@ def resolve_sources(data: DictConfig) -> tuple[list[tuple[str, str, int]], str]:
 
 
 def stream_rows(parts, with_embedding):
-    """Yield (part_name, df, emb_array|None) per batch. Row position in df = row index."""
-    cols = CHEAP_COLUMNS + (["embedding"] if with_embedding else [])
+    """Yield (part_name, df, emb|None) per batch. Row position in df = row index.
+
+    ``df`` holds CHEAP_COLUMNS; when embedding is requested, ``emb`` is a float32
+    (n, dim) array taken straight from arrow (no per-cell Python objects).
+    """
     for _name, local, _size in parts:
         pf = pq.ParquetFile(local)
+        cols = CHEAP_COLUMNS + (["embedding"] if with_embedding else [])
         for batch in pf.iter_batches(columns=cols, batch_size=4096):
-            df = batch.to_pandas()
-            if len(df) == 0:
+            n = len(batch)
+            if n == 0:
                 continue
+            df = batch.select(CHEAP_COLUMNS).to_pandas()
             emb = None
             if with_embedding:
-                emb = df["embedding"].to_numpy()  # object array of lists
+                vals = batch.column("embedding").values.to_numpy(zero_copy_only=False)
+                if vals.size % n == 0:  # uniform embedding dim -> fast path
+                    emb = vals.reshape(n, -1).astype(np.float32)
+                else:  # fallback: ragged rows
+                    rows = batch.column("embedding").to_numpy(zero_copy_only=False)
+                    emb = np.stack([np.asarray(r, dtype=np.float32) for r in rows])
             yield _name, df, emb
 
 
@@ -163,43 +173,51 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
         if not m.any():
             continue
-        emb_arr = np.stack([np.asarray(e, dtype=np.float32) for e in emb])
+        sid_hex = [
+            s.hex() if isinstance(s, (bytes, bytearray)) else str(s)
+            for s in df["slide_id"]
+        ]
+        keep_idx = []
         for i, ok in enumerate(m):
             if not ok:
                 continue
-            sid = df["slide_id"].iloc[i]
-            h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
+            h = sid_hex[i]
             p = plan.get(h)
             if p is None:
                 continue
             # stride sample in tiling order: keep slot (rank+offset) % step == 0, stop at cap
             if p[3] < p[2] and (p[4] + p[1]) % p[0] == 0:
-                X_rows.append(emb_arr[i])
-                meta_rows.append(
-                    (
-                        h,
-                        int(df["x"].iloc[i]),
-                        int(df["y"].iloc[i]),
-                        int(df["carcinoma"].iloc[i]),
-                        float(df["tissue_roi_percentage"].iloc[i]),
-                    )
-                )
+                keep_idx.append(i)
                 kept += 1
                 p[3] += 1
             p[4] += 1
+        if keep_idx:
+            X_rows.append(emb[keep_idx].copy())
+            ki = np.asarray(keep_idx)
+            meta_rows.extend(
+                zip(
+                    [sid_hex[i] for i in keep_idx],
+                    df["x"].to_numpy()[ki].astype(int),
+                    df["y"].to_numpy()[ki].astype(int),
+                    df["carcinoma"].to_numpy()[ki].astype(int),
+                    df["tissue_roi_percentage"].to_numpy()[ki].astype(float),
+                    strict=True,
+                )
+            )
     if cur is not None:
         print(f"  pass2 {cur} done, kept {kept} ({time.monotonic() - t0:.0f}s)")
-    print(f"  collected {len(X_rows)} tile embeddings ({time.monotonic() - t0:.0f}s)")
+    print(f"  collected {kept} tile embeddings ({time.monotonic() - t0:.0f}s)")
 
     if not X_rows:
         raise SystemExit("no tiles collected")
-    X = np.stack(X_rows).astype(np.float32)
+    X = np.concatenate(X_rows, axis=0)  # f32 in, f32 out - no f64 copy
+    del X_rows
     dim = X.shape[1]
 
-    # L2 normalize
+    # L2 normalize (in place)
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
-    X = (X / norms).astype(np.float32)
+    X /= norms
     np.save(out / "X_norm.npy", X)
 
     # ---- cluster
@@ -276,7 +294,7 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
         json.dumps(
             {
                 "k": config.k,
-                "n_tiles": len(X_rows),
+                "n_tiles": len(meta_rows),
                 "n_slides": df_out["slide_id"].nunique(),
                 "dim": dim,
                 "silhouette_subsample": round(float(sil), 4),
@@ -298,7 +316,7 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
     mlflow.log_metrics(
         {
             "k": float(config.k),
-            "n_tiles": float(len(X_rows)),
+            "n_tiles": float(len(meta_rows)),
             "n_slides": float(df_out["slide_id"].nunique()),
             "silhouette_subsample": float(sil),
             "inertia": float(km.inertia_),

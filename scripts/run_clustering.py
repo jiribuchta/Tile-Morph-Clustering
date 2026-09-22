@@ -14,7 +14,8 @@ submit_job(
         "uv sync",
         "export MLFLOW_TRACKING_URI=http://mlflow.rationai-mlflow:5000/",
         "uv run python -c 'from mlflow.tracking import MlflowClient; e = MlflowClient().get_experiment_by_name(\"Breast Cancer\"); assert e, \"no Breast Cancer exp\"; print(\"tracking OK, exp\", e.experiment_id)'",
-        "uv run -m cluster_tiles +data=mmci_b20_24 +experiment/clustering=train_k32",
+        # parts=500 ~= 50 GB subset (500/9214 files); full run: parts=0
+        "uv run -m cluster_tiles +data=mmci_b20_24 +experiment/clustering=train_k32 parts=500",
     ],
     storage=[storage.secure.DATA, storage.secure.PROJECTS],
 )
