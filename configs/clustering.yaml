@@ -7,7 +7,7 @@ out: ???
 k: 32
 n_init: 4
 tiles_per_slide: 256
-min_tissue: 0.05
+min_tissue: 0.5
 parts: 0  # max tile parts to process (0 = all)
 seed: 0
 

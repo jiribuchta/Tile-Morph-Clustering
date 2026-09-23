@@ -288,6 +288,7 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
                     "h": int(sm["tile_extent_y"]),
                     "mpp": float(sm["mpp_x"]),
                     "dist": round(float(d[np.where(cm == j)[0][0]]), 4),
+                    "tissue": round(float(meta_rows[j][4]), 4),
                 }
             )
     (out / "summary.json").write_text(

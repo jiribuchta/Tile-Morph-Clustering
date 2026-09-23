@@ -28,8 +28,20 @@ def crop_tile(
     return img.resize((size, size))
 
 
+def _cluster_order(by_cluster: dict[int, list[dict]], k: int, sort: str) -> list[int]:
+    if sort == "tissue":
+        means = {
+            c: sum(r["tissue"] for r in rs) / len(rs)
+            for c, rs in by_cluster.items()
+            if rs and all("tissue" in r for r in rs)
+        }
+        if len(means) == len(by_cluster) and means:
+            return sorted(range(k), key=lambda c: -means.get(c, -1.0))
+    return list(range(k))
+
+
 def render_medoids(
-    rows: list[dict], out_dir: Path, cols: int = 8, size: int = 256
+    rows: list[dict], out_dir: Path, cols: int = 8, size: int = 256, sort: str = "id"
 ) -> Path:
     """Write ``medoids.png`` into ``out_dir``; returns the path.
 
@@ -46,8 +58,9 @@ def render_medoids(
     height = k * (label_h + cell + gap) + gap
     canvas = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(canvas)
-    for c in range(k):
-        y0 = gap + c * (label_h + cell + gap)
+    order = _cluster_order(by_cluster, k, sort)
+    for i, c in enumerate(order):
+        y0 = gap + i * (label_h + cell + gap)
         draw.text((gap, y0), f"cluster {c}", fill="black")
         y1 = y0 + label_h
         for j, r in enumerate(by_cluster.get(c, [])[:cols]):
@@ -81,11 +94,31 @@ def main() -> None:
     ap.add_argument("--out", default=".", help="output dir for medoids.png")
     ap.add_argument("--cols", type=int, default=8, help="medoids per cluster row")
     ap.add_argument("--size", type=int, default=256, help="render tile size (px)")
+    ap.add_argument(
+        "--sort",
+        choices=["id", "tissue"],
+        default="id",
+        help="row order: cluster id, or densest-tissue first (needs tissue in medoids.jsonl)",
+    )
+    ap.add_argument(
+        "--path-map",
+        nargs="*",
+        default=[],
+        metavar="OLD_PREFIX=NEW_PREFIX",
+        help="remap slide_path prefixes, e.g. /mnt/bioptic_tree=/mnt/data/... (repeatable)",
+    )
     args = ap.parse_args()
 
     with open(args.medoids) as f:
         rows = [json.loads(line) for line in f if line.strip()]
-    out_path = render_medoids(rows, Path(args.out), cols=args.cols, size=args.size)
+    for pair in args.path_map:
+        old, new = pair.split("=", 1)
+        for r in rows:
+            if r["slide_path"].startswith(old):
+                r["slide_path"] = new + r["slide_path"][len(old) :]
+    out_path = render_medoids(
+        rows, Path(args.out), cols=args.cols, size=args.size, sort=args.sort
+    )
     print(f"wrote: {out_path} ({len(rows)} tiles)")
 
 
