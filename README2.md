@@ -49,10 +49,10 @@ Knobs that matter:
 | `summary.json` | per cluster: n_tiles, n_slides, slide_share, mean_carcinoma, mean_tissue_roi |
 | `medoids.jsonl` | 8 nearest-to-centroid tiles per cluster, with crop recipe → montage manifest |
 | `slides.parquet` | slide metadata copy |
+| `medoids.png` | labeled contact sheet (rows = clusters, cols = medoid tiles), rendered at the end of the job when OpenSlide + WSIs are reachable; the job never fails over it (prints `[montage] skipped: …` instead) |
 
-Montage rendering: for each medoid crop
-`reader.read_region((x, y), level=level, width=w, height=h)` (bioforma for `.mrxs`),
-grid by cluster, nearest-centroid first.
+Re-render from an existing run (no re-clustering), e.g. with different grid/size:
+`uv run python scripts/montage.py --medoids <out>/medoids.jsonl --out . --cols 8`
 
 ## Reading results
 

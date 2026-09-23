@@ -312,7 +312,6 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
             f.write(json.dumps(r) + "\n")
 
     # ---- log to mlflow
-    logger.log_artifacts(str(out), config.mlflow_artifact_path)
     mlflow.log_metrics(
         {
             "k": float(config.k),
@@ -324,6 +323,17 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
     )
 
     print(f"wrote: {out} ({time.monotonic() - t0:.0f}s total)")
+
+    # Optional: medoid contact sheet. Needs OpenSlide + WSI access; never fails the job.
+    try:
+        from scripts.montage import render_medoids
+
+        p = render_medoids(medoids, out)
+        print(f"wrote: {p}")
+    except Exception as e:
+        print(f"[montage] skipped: {type(e).__name__}: {e}")
+
+    logger.log_artifacts(str(out), config.mlflow_artifact_path)
     print("clusters by n_tiles (top 10):")
     top = sorted(summary.items(), key=lambda kv: -kv[1]["n_tiles"])[:10]
     for c, s in top:
