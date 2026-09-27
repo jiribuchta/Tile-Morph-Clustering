@@ -1,13 +1,13 @@
-"""Debug black medoid crops: dump raw crops + slide frame metadata + overview.
+"""Pinpoint why medoid crops are black: alpha? coords? level?
 
-Writes a small contact sheet per medoid (``<out>/medoid_<cluster>_<i>.png``) and
-one overview per slide (``<out>/overview_<slide>.png``), and prints the slide's
-OpenSlide properties / associated files so we can see whether the ``.mrxs``
-is multiframe and which frame ``read_region`` is reading.
+For each medoid slide (up to --max), opens the .mrxs once and:
+  - reports alpha / channel stats of the nominal crop (RGBA)
+  - renders a labeled overview: tissue bbox + medoid crop boxes drawn on it
+  - prints where tissue actually is (non-black bbox at the crop's level)
 
-Run on the node with the WSI mount:
+Writes ``overview_<slide>.png`` per slide. Run on the WSI node:
     uv run python scripts/thumbnail_medoids.py \
-        --medoids <out>/medoids.jsonl --out /tmp/medoid_dbg --max 6
+        --medoids <out>/medoids.jsonl --out ./medoids --max 4
 """
 
 import argparse
@@ -16,104 +16,83 @@ from pathlib import Path
 
 import numpy as np
 import openslide
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
-def _mean(img: Image.Image) -> float:
-    return float(np.asarray(img.convert("L")).mean())
+def _bbox_nonblack(arr: np.ndarray, thr: int = 16):
+    """Bounding box of non-black pixels in an HxWx* grayscale-ish array."""
+    g = arr.max(axis=-1) if arr.ndim == 3 else arr
+    ys, xs = np.where(g > thr)
+    if len(xs) == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 
-def slide_overview(path: str, out: Path) -> None:
-    """Downsample the whole slide to <=1024px wide and save it."""
-    with openslide.OpenSlide(path) as s:
-        best = s.get_best_level_for_downsample(32.0)
-        w0, h0 = s.level_dimensions[best]
-        img = s.read_region((0, 0), best, (w0, h0))
-        if img.width > 1024:
-            r = 1024 / img.width
-            img = img.resize((1024, int(img.height * r)))
-    img.save(out / f"overview_{Path(path).stem}.png")
-
-
-def medoid_sheet(r: dict, out: Path, tag: str) -> None:
-    """One sheet: raw crop at nominal level, plus L-1 / L+1, plus 1 overview tile."""
+def medoid_overview(r: dict, out: Path, i: int) -> None:
     p = r["slide_path"]
     lv, x, y, w, h = r["level"], r["x"], r["y"], r["w"], r["h"]
-    cells, notes = [], []
     with openslide.OpenSlide(p) as s:
-        nlevels = s.level_count
+        # nominal crop RGBA
+        crop = s.read_region((x, y), lv, (w, h))
+        carr = np.asarray(crop)
+        alpha = (
+            f"alpha min={carr[..., 3].min()} max={carr[..., 3].max()}"
+            if carr.shape[-1] == 4 else "no alpha"
+        )
+        rgb_mean = float(np.asarray(crop.convert("RGB")).mean())
 
-        def crop(level: int, cx: int, cy: int, cw: int, ch: int) -> Image.Image | None:
-            if level < 0 or level >= nlevels:
-                return None
-            W, H = s.level_dimensions[level]
-            if cx >= W or cy >= H:
-                return None
-            cw = min(cw, W - cx)
-            ch = min(ch, H - cy)
-            return s.read_region((cx, cy), level, (cw, ch))
+        # overview at ~32x downsample, with markers
+        best = s.get_best_level_for_downsample(32.0)
+        W, H = s.level_dimensions[best]
+        ov = s.read_region((0, 0), best, (W, H)).convert("RGB")
+        ov2l0 = s.level_dimensions[0][0] / ov.width  # overview px -> level-0 px
 
-        nominal = crop(lv, x, y, w, h)
-        if nominal is not None:
-            nominal = nominal.resize((224, 224))
-            cells.append(nominal)
-            notes.append(f"L{lv} mean={_mean(nominal):.0f}")
-        for cand, lab in [
-            (crop(lv - 1, x // 2, y // 2, w // 2, h // 2), f"L{lv-1}"),
-            (crop(lv + 1, x * 2, y * 2, w * 2, h * 2), f"L{lv+1}"),
-        ]:
-            if cand is not None:
-                cells.append(cand.resize((224, 224)))
-                notes.append(f"{lab} mean={_mean(cand):.0f}")
+        # tissue bbox at this overview level
+        tbb = _bbox_nonblack(np.asarray(ov))
 
-    canvas = Image.new("RGB", (230 * len(cells) + 4, 250), "white")
-    for i, c in enumerate(cells):
-        canvas.paste(c, (i * 230 + 2, 20))
-    from PIL import ImageDraw
+        draw = ImageDraw.Draw(ov)
+        notes = [f"c={r['cluster']} L{lv} ({x},{y}) cropRGBmean={rgb_mean:.0f}"]
+        if tbb:
+            x0, y0, x1, y1 = tbb
+            draw.rectangle([x0, y0, x1, y1], outline="lime", width=2)
+            notes.append(f"tissue_bbox_L0~({int(x0*ov2l0)},{int(y0*ov2l0)})-({int(x1*ov2l0)},{int(y1*ov2l0)})")
+        # medoid box (convert level-lv coords to overview coords)
+        lv_w, lv_h = s.level_dimensions[lv]
+        kx = ov.width / lv_w
+        ky = ov.height / lv_h
+        bx0, by0 = int(x * kx), int(y * ky)
+        bx1, by1 = int((x + w) * kx), int((y + h) * ky)
+        draw.rectangle([bx0, by0, bx1, by1], outline="red", width=2)
+        draw.line([bx0, by0, bx1, by1], fill="red", width=1)
 
-    ImageDraw.Draw(canvas).text((2, 2), " ".join(notes), fill="black")
-    canvas.save(out / f"medoid_{tag}.png")
+        if ov.width > 1024:
+            rr = 1024 / ov.width
+            ov = ov.resize((1024, int(ov.height * rr)))
+
+    print(f"[{i}] {Path(p).name} L{lv} ({x},{y}) {w}x{h}")
+    print(f"    crop: {alpha}, RGBmean={rgb_mean:.0f}")
+    print(f"    {' | '.join(notes)}")
+    ov.save(out / f"overview_{Path(p).stem}_{i}.png")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--medoids", required=True)
-    ap.add_argument("--out", default="/tmp/medoid_dbg")
-    ap.add_argument("--max", type=int, default=6)
-    ap.add_argument("--overview", type=int, default=3,
-                    help="how many distinct slides to dump a full overview for")
+    ap.add_argument("--out", default="./medoids")
+    ap.add_argument("--max", type=int, default=4)
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     with open(args.medoids) as f:
-        rows = [json.loads(l) for l in f if l.strip()]
-    rows = rows[: args.max]
-
-    seen = set()
+        rows = [json.loads(l) for l in f if l.strip()][: args.max]
     for i, r in enumerate(rows):
         p = Path(r["slide_path"])
-        print(f"[{i}] c={r['cluster']} {p.name} level={r['level']} "
-              f"({r['x']},{r['y']}) {r['w']}x{r['h']}")
         if not p.exists():
-            print("    MISSING FILE")
+            print(f"[{i}] MISSING {p}")
             continue
-        with openslide.OpenSlide(p) as s:
-            w0, h0 = s.level_dimensions[0]
-            print(f"    level_count={s.level_count}  L0 size={w0}x{h0}")
-            props = {k: v for k, v in s.properties.items()
-                     if any(t in k.lower() for t in ("mpp", "vendor", "frame", "type"))}
-            for k, v in props.items():
-                print(f"    {k} = {v}")
-            afs = list(s.associated_images)
-            if afs:
-                print(f"    associated_files: {afs[:8]}")
-        medoid_sheet(r, out, tag=f"{r['cluster']}_{i}")
-        if p.name not in seen and len(seen) < args.overview:
-            seen.add(p.name)
-            slide_overview(p, out)
-            print(f"    -> overview_{p.stem}.png")
-    print(f"\nwrote sheets to {out}")
+        medoid_overview(r, out, i)
+    print(f"\nwrote overviews to {out}")
 
 
 if __name__ == "__main__":
