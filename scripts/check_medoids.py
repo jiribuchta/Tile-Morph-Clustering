@@ -58,23 +58,32 @@ def check_slide_geometry(slides: pd.DataFrame, sharded: Path, n: int = 3) -> Non
         print(f"  skipped: openslide unavailable ({e})")
         return
 
+    def mpp0(s):
+        raw = s.properties.get("openslide.mpp")
+        try:
+            return tuple(float(t) for t in raw.split(","))
+        except Exception:
+            return None
+
     for i, r in slides.head(n).iterrows():
         p = r["path"]
         if not Path(p).exists():
             print(f"  {p}: MISSING FILE")
             continue
         with openslide.OpenSlide(p) as s:
-            dims = [
-                f"L{lv}: {s.level_dimensions[lv][0]}x{s.level_dimensions[lv][1]} "
-                f"mpp=({s.level_mpp[lv][0]:.4f},{s.level_mpp[lv][1]:.4f})"
-                for lv in range(s.level_count)
-            ]
+            base = mpp0(s)
+            dims = []
+            for lv in range(s.level_count):
+                W, H = s.level_dimensions[lv]
+                m = f" mpp={base[0] * s.level_downsamples[lv][0]:.4f}" if base else ""
+                dims.append(f"L{lv}: {W}x{H}{m}")
             print(f"  {Path(p).name}: {' | '.join(dims)}")
             lv = int(r["level"])
             W, H = s.level_dimensions[lv]
+            lv_mpp = base[0] * s.level_downsamples[lv][0] if base else float("nan")
             print(
                 f"    stored level={lv} (dim {W}x{H}), mpp_x stored={r['mpp_x']:.4f} "
-                f"vs WSI mpp={s.level_mpp[lv][0]:.4f}"
+                f"vs WSI~{lv_mpp:.4f}"
             )
 
 
