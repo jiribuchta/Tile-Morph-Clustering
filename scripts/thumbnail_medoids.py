@@ -99,7 +99,8 @@ def main() -> None:
             print("    MISSING FILE")
             continue
         with openslide.OpenSlide(p) as s:
-            print(f"    level_count={s.level_count}  size={s.width}x{s.height}")
+            w0, h0 = s.level_dimensions[0]
+            print(f"    level_count={s.level_count}  L0 size={w0}x{h0}")
             props = {k: v for k, v in s.properties.items()
                      if any(t in k.lower() for t in ("mpp", "vendor", "frame", "type"))}
             for k, v in props.items():
