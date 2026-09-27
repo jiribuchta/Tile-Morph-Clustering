@@ -26,7 +26,7 @@ def _mean(img: Image.Image) -> float:
 def slide_overview(path: str, out: Path) -> None:
     """Downsample the whole slide to <=1024px wide and save it."""
     with openslide.OpenSlide(path) as s:
-        best = s.get_best_level_for_downsample(1.0 / 32)
+        best = s.get_best_level_for_downsample(32.0)
         w0, h0 = s.level_dimensions[best]
         img = s.read_region((0, 0), best, (w0, h0))
         if img.width > 1024:
@@ -105,7 +105,7 @@ def main() -> None:
                      if any(t in k.lower() for t in ("mpp", "vendor", "frame", "type"))}
             for k, v in props.items():
                 print(f"    {k} = {v}")
-            afs = list(s.associated_files)
+            afs = list(s.associated_images)
             if afs:
                 print(f"    associated_files: {afs[:8]}")
         medoid_sheet(r, out, tag=f"{r['cluster']}_{i}")
