@@ -23,8 +23,22 @@ from PIL import Image, ImageDraw
 def crop_tile(
     slide_path: str, x: int, y: int, level: int, w: int, h: int, size: int
 ) -> Image.Image:
+    """Crop a tile stored in ``level`` space.
+
+    These .mrxs carry real pixels only at level 0 (levels 1+ are empty), so map
+    the stored level-``level`` region to the same level-0 region (coords x 2^level)
+    and read there. Output is resized to ``size`` either way, so layout is unchanged.
+    """
     with openslide.OpenSlide(slide_path) as slide:
-        img = slide.read_region((x, y), level, (w, h))
+        n = max(level, 0)
+        W, H = slide.level_dimensions[0]
+        rx, ry = x << n, y << n
+        rw, rh = w << n, h << n
+        rx = min(rx, max(0, W - 1))
+        ry = min(ry, max(0, H - 1))
+        rw = min(rw, max(1, W - rx))
+        rh = min(rh, max(1, H - ry))
+        img = slide.read_region((rx, ry), 0, (rw, rh))
     return img.resize((size, size))
 
 

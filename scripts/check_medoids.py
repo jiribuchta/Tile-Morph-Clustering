@@ -88,6 +88,11 @@ def check_slide_geometry(slides: pd.DataFrame, sharded: Path, n: int = 3) -> Non
 
 
 def check_medoid_crops(medoids: list[dict], n: int = 12) -> None:
+    """Read each medoid exactly as the working pattern: read_region((x,y), level,
+    (w,h)) in level-space coords; empty == alpha.max()==0. Also reads the SAME
+    physical region at level 0 (coords x 2^level) so we can tell 'tile is on
+    background' from 'stored level is the wrong one'.
+    """
     print(f"== 3. medoid crops ({len(medoids)} in jsonl, checking {n}) ==")
     try:
         import openslide
@@ -95,15 +100,15 @@ def check_medoid_crops(medoids: list[dict], n: int = 12) -> None:
         print(f"  skipped: openslide unavailable ({e})")
         return
 
-    # spread across clusters
     by_c: dict[int, list[dict]] = {}
     for r in medoids:
         by_c.setdefault(r["cluster"], []).append(r)
-    picks = []
-    for c in sorted(by_c):
-        picks.extend(by_c[c])
+    picks = [r for c in sorted(by_c) for r in by_c[c]]
     idx = np.linspace(0, len(picks) - 1, min(n, len(picks))).round().astype(int)
-    dark_nominal, dark_up, dark_dn, missing = 0, 0, 0, 0
+
+    empty_nom, ok_nom = 0, 0          # stored-level read empty / has data
+    ok_l0 = 0                          # same region non-empty at L0
+    missing = 0
     for i in idx:
         r = picks[i]
         p = r["slide_path"]
@@ -114,47 +119,54 @@ def check_medoid_crops(medoids: list[dict], n: int = 12) -> None:
         try:
             with openslide.OpenSlide(p) as s:
                 lv = int(r["level"])
+                x, y, w, h = int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])
                 if lv >= s.level_count:
-                    print(f"  c={r['cluster']}: stored level {lv} out of range "
+                    print(f"  c={r['cluster']}: stored level {lv} OOR "
                           f"(level_count={s.level_count})")
                     continue
 
-                def mean_at(level: int, x: int, y: int, w: int, h: int) -> float | None:
+                def stats(level: int, px: int, py: int, pw: int, ph: int):
+                    """(alpha_max, rgb_mean) or (None, None) if out of bounds."""
                     W, H = s.level_dimensions[level]
-                    if x + w > W or y + h > H:  # out of bounds -> informative miss
-                        return None
-                    img = s.read_region((x, y), level, (w, h)).convert("L")
-                    return float(np.asarray(img).mean())
+                    if px < 0 or py < 0 or px >= W or py >= H:
+                        return None, None
+                    pw, ph = min(pw, W - px), min(ph, H - py)
+                    if pw <= 0 or ph <= 0:
+                        return None, None
+                    a = np.asarray(s.read_region((px, py), level, (pw, ph)))
+                    amax = int(a[..., 3].max()) if a.shape[-1] == 4 else 255
+                    return amax, float(a[..., :3].mean())
 
-                m0 = mean_at(lv, r["x"], r["y"], r["w"], r["h"])
-                line = f"  c={r['cluster']} {Path(p).name} ({r['x']},{r['y']}) "
-                line += f"nominal L{lv} mean={m0:.0f}"
-                if m0 is not None and m0 < 120:
-                    dark_nominal += 1
-                    up = mean_at(lv + 1, r["x"] * 2, r["y"] * 2, r["w"] * 2, r["h"] * 2)
-                    dn = mean_at(max(0, lv - 1), r["x"] // 2, r["y"] // 2,
-                                 max(1, r["w"] // 2), max(1, r["h"] // 2))
-                    line += f"  | L{lv+1}: {up if up is None else round(up)} " \
-                            f"L{max(0, lv-1)}: {dn if dn is None else round(dn)}"
-                    if up is not None and up >= 120:
-                        dark_up += 1
-                    if dn is not None and dn >= 120:
-                        dark_dn += 1
-                print(line)
+                a_nom, m_nom = stats(lv, x, y, w, h)
+                a_l0, m_l0 = stats(0, x << lv, y << lv, w << lv, h << lv)  # same region
+                if a_nom is None:
+                    print(f"  c={r['cluster']} {Path(p).name}: stored level OOB")
+                    continue
+                tag_nom = "EMPTY" if a_nom == 0 else f"a{a_nom} rgb{m_nom:.0f}"
+                tag_l0 = ("OOB" if a_l0 is None
+                          else ("EMPTY" if a_l0 == 0 else f"a{a_l0} rgb{m_l0:.0f}"))
+                print(f"  c={r['cluster']} {Path(p).name} ({x},{y}) L{lv} {w}x{h}")
+                print(f"      stored-level read : {tag_nom}")
+                print(f"      L0 same region    : {tag_l0}")
+                if a_nom == 0:
+                    empty_nom += 1
+                else:
+                    ok_nom += 1
+                if a_l0 is not None and a_l0 > 0:
+                    ok_l0 += 1
         except Exception as e:  # noqa: BLE001
             print(f"  c={r['cluster']} {Path(p).name}: ERROR {type(e).__name__}: {e}")
-    print(
-        f"  -> dark@nominal={dark_nominal}  (bright at L+1: {dark_up}, "
-        f"bright at L-1: {dark_dn}, missing files: {missing})"
-    )
-    if dark_nominal and dark_up > dark_nominal / 2:
-        print("  >>> bright one level DOWN in the pyramid: stored level is one too "
-              "HIGH (coords are in the coarser level's space)")
-    if dark_nominal and dark_dn > dark_nominal / 2:
-        print("  >>> bright one level UP in the pyramid: stored level is one too LOW")
-    if dark_nominal and not dark_up and not dark_dn:
-        print("  >>> dark at every level: tiles really have no tissue there "
-              "(tissue filter broken, or file != file tiling used)")
+    print(f"  -> stored-level: empty={empty_nom}  has-data={ok_nom}  "
+          f"L0-same-region has-data={ok_l0}  missing={missing}")
+    if empty_nom:
+        if ok_l0 >= empty_nom / 2:
+            print("  >>> stored level empty but SAME REGION HAS DATA AT L0: the read "
+                  "level is the problem, not the coords. Read the tile at level 0 "
+                  "(montage.py already does: coords x 2^level). No re-tile needed.")
+        else:
+            print("  >>> empty at the stored level AND empty at L0 same region: the "
+                  "tile coords sit on background (tiling/mask placed grid tiles off-"
+                  "tissue). Durable fix = re-tile with a mask at the grid's level.")
 
 
 def main() -> None:
