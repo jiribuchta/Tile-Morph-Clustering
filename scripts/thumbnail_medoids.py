@@ -28,40 +28,53 @@ def _bbox_nonblack(arr: np.ndarray, thr: int = 16):
     return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 
+def _stats(s, level, x, y, w, h):
+    W, H = s.level_dimensions[level]
+    if x >= W or y >= H:
+        return f"L{level} OOB"
+    w, h = min(w, W - x), min(h, H - y)
+    a = np.asarray(s.read_region((x, y), level, (w, h)))
+    al = f"a{a[..., 3].min()}-{a[..., 3].max()}" if a.shape[-1] == 4 else "no-a"
+    return f"L{level} rgb{float(a[..., :3].mean()):.0f} {al}"
+
+
 def medoid_overview(r: dict, out: Path, i: int) -> None:
     p = r["slide_path"]
     lv, x, y, w, h = r["level"], r["x"], r["y"], r["w"], r["h"]
     with openslide.OpenSlide(p) as s:
-        # nominal crop RGBA
-        crop = s.read_region((x, y), lv, (w, h))
-        carr = np.asarray(crop)
-        alpha = (
-            f"alpha min={carr[..., 3].min()} max={carr[..., 3].max()}"
-            if carr.shape[-1] == 4 else "no alpha"
-        )
-        rgb_mean = float(np.asarray(crop.convert("RGB")).mean())
+        vendor = s.properties.get("openslide.vendor", "?")
+        afs = list(s.associated_files)
+        print(f"[{i}] {Path(p).name} vendor={vendor}")
+        print(f"    associated_files: {afs if afs else 'none'}")
+
+        # same physical region at L-1 / L / L+1: RGB + alpha
+        same_phys = []
+        for cand in (lv - 1, lv, lv + 1):
+            if 0 <= cand < s.level_count:
+                d = lv - cand  # +1 coarser, -1 finer
+                fx, fy = (x >> d, y >> d) if d > 0 else (x << -d, y << -d)
+                fw, fh = (w >> d, h >> d) if d > 0 else (w << -d, h << -d)
+                same_phys.append(_stats(s, cand, fx, fy, fw, fh))
+        print(f"    same physical region: {' | '.join(same_phys)}")
 
         # overview at ~32x downsample, with markers
         best = s.get_best_level_for_downsample(32.0)
         W, H = s.level_dimensions[best]
         ov = s.read_region((0, 0), best, (W, H)).convert("RGB")
         ov2l0 = s.level_dimensions[0][0] / ov.width  # overview px -> level-0 px
-
-        # tissue bbox at this overview level
         tbb = _bbox_nonblack(np.asarray(ov))
 
         draw = ImageDraw.Draw(ov)
-        notes = [f"c={r['cluster']} L{lv} ({x},{y}) cropRGBmean={rgb_mean:.0f}"]
         if tbb:
             x0, y0, x1, y1 = tbb
             draw.rectangle([x0, y0, x1, y1], outline="lime", width=2)
-            notes.append(f"tissue_bbox_L0~({int(x0*ov2l0)},{int(y0*ov2l0)})-({int(x1*ov2l0)},{int(y1*ov2l0)})")
-        # medoid box (convert level-lv coords to overview coords)
+            print(
+                f"    tissue_bbox_L0~({int(x0*ov2l0)},{int(y0*ov2l0)})-"
+                f"({int(x1*ov2l0)},{int(y1*ov2l0)})"
+            )
         lv_w, lv_h = s.level_dimensions[lv]
-        kx = ov.width / lv_w
-        ky = ov.height / lv_h
-        bx0, by0 = int(x * kx), int(y * ky)
-        bx1, by1 = int((x + w) * kx), int((y + h) * ky)
+        kx, ky = ov.width / lv_w, ov.height / lv_h
+        bx0, by0, bx1, by1 = int(x * kx), int(y * ky), int((x + w) * kx), int((y + h) * ky)
         draw.rectangle([bx0, by0, bx1, by1], outline="red", width=2)
         draw.line([bx0, by0, bx1, by1], fill="red", width=1)
 
@@ -69,10 +82,8 @@ def medoid_overview(r: dict, out: Path, i: int) -> None:
             rr = 1024 / ov.width
             ov = ov.resize((1024, int(ov.height * rr)))
 
-    print(f"[{i}] {Path(p).name} L{lv} ({x},{y}) {w}x{h}")
-    print(f"    crop: {alpha}, RGBmean={rgb_mean:.0f}")
-    print(f"    {' | '.join(notes)}")
     ov.save(out / f"overview_{Path(p).stem}_{i}.png")
+    print(f"    -> overview_{Path(p).stem}_{i}.png")
 
 
 def main() -> None:
