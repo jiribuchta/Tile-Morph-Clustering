@@ -38,8 +38,8 @@ def probe(path: str) -> None:
         print(f"== {name}  tissue centroid L0~({int(cx)},{int(cy)})  px@coarse={len(xs)}")
         for lv in range(s.level_count):
             W, H = s.level_dimensions[lv]
-            px = min(int(cx >> lv), max(0, W - 64))
-            py = min(int(cy >> lv), max(0, H - 64))
+            px = min(int(cx) >> lv, max(0, W - 64))
+            py = min(int(cy) >> lv, max(0, H - 64))
             a = np.asarray(s.read_region((px, py), lv, (64, 64)))
             al = f"a{a[..., 3].min()}-{a[..., 3].max()}" if a.shape[-1] == 4 else "no-a"
             print(f"  L{lv} {W}x{H}  patch@({px},{py}) "
