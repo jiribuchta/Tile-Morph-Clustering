@@ -1,0 +1,14 @@
+# @package data
+# MMCI B20-24 Train, Virchow2 embeddings merged with tiling parquets.
+# Source of truth: YouTrack BRC-A-41 "MMCI", Foundation Embeddings table.
+#   run af9b380f0d4846408f30f99ee0390f37  ->  `MMCI B20-24 Train_sharded`
+#   storage: /mnt/projects/breast_cancer/bc/stored_artifacts/tiles_with_embeddings/
+#            virchow2/MMCI B20-24 Train/MMCI B20-24 Train_sharded
+# paths.local intentionally null so the MLflow artifacts (the blessed run) are
+# used, not a possibly-stale local copy.
+name: mmci_b20_24_train
+paths:
+  local: /mnt/projects/breast_cancer/bc/tiling_parquets_sharded/MMCI B20-24 Train/Virchow2
+mlflow_uris:
+  tiles: mlflow-artifacts:/61/af9b380f0d4846408f30f99ee0390f37/artifacts/MMCI B20-24 Train_sharded/tiles
+  slides: mlflow-artifacts:/61/af9b380f0d4846408f30f99ee0390f37/artifacts/MMCI B20-24 Train_sharded/slides/slides.parquet
