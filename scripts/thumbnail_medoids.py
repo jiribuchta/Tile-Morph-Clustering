@@ -47,13 +47,18 @@ def medoid_overview(r: dict, out: Path, i: int) -> None:
         print(f"[{i}] {Path(p).name} vendor={vendor}")
         print(f"    associated_files: {afs if afs else 'none'}")
 
-        # same physical region at L-1 / L / L+1: RGB + alpha
+        # true same physical region at L-1 / L / L+1: RGB + alpha
+        # finer level (lower idx) -> coords x 2^n; coarser (higher idx) -> / 2^n
         same_phys = []
         for cand in (lv - 1, lv, lv + 1):
             if 0 <= cand < s.level_count:
-                d = lv - cand  # +1 coarser, -1 finer
-                fx, fy = (x >> d, y >> d) if d > 0 else (x << -d, y << -d)
-                fw, fh = (w >> d, h >> d) if d > 0 else (w << -d, h << -d)
+                n = lv - cand
+                if n > 0:    # cand finer -> multiply
+                    fx, fy, fw, fh = x << n, y << n, w << n, h << n
+                elif n < 0:  # cand coarser -> divide
+                    fx, fy, fw, fh = x >> -n, y >> -n, w >> -n, h >> -n
+                else:
+                    fx, fy, fw, fh = x, y, w, h
                 same_phys.append(_stats(s, cand, fx, fy, fw, fh))
         print(f"    same physical region: {' | '.join(same_phys)}")
 
