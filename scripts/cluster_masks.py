@@ -90,13 +90,20 @@ def main():
     print(f"{len(slides)} slides to write -> {dest}")
 
     t0 = time.monotonic()
+    used_names = set()
     failed = []
     for i, sid in enumerate(slides, 1):
         row = s.loc[sid]
         df = a[a["slide_id"] == sid]
         try:
             canvas, W, H, source = build_canvas(df, row)
-            path = dest / f"{sid}.tiff"
+            stem = Path(row["path"]).stem  # same name as the original WSI
+            name, n = stem, 1
+            while name in used_names:
+                name = f"{stem}-{n}"
+                n += 1
+            used_names.add(name)
+            path = dest / f"{name}.tiff"
             img = pyvips.Image.new_from_array(canvas)
             # canvas is the tiling level itself -> its mpp is the slide's mpp
             mpp_y = float(row["mpp_y"]) if "mpp_y" in row else float(row["mpp_x"])
