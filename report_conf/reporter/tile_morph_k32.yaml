@@ -1,0 +1,182 @@
+# Report-tool config: TileMorph k=32 cluster masks over the MAMMAPRINT WSIs.
+#
+# This is a Hydra group file for the `report` tool (NOT this repo's Hydra).
+# Drop this file as  <config_dir>/reporter/tile_morph_k32.yaml  and run:
+#
+#     python -m report --config-dir report_conf reporter=tile_morph_k32 user=<you>
+#
+# (add  mlflow=kubas_external  if you run outside the Kubas cluster)
+#
+# The mask files are produced by this repo's `make_masks` (one .tiff per slide,
+# uint8 label image at WSI level-0 size, pixel value = cluster id, 0 = background).
+# The mask file name (slide stem) is the join key to the WSI below.
+#
+# Adjust the two paths to match where `make_masks` wrote the masks and where
+# the WSIs are mounted for xOpat.
+
+defaults:
+  - _self_
+
+title: TileMorph clustering (k=32) - MAMMAPRINT
+
+# --- background: the WSIs to display (MIRAX .mrxs) --------------------------------
+# rglob finds every *.mrxs under source_dir; item_name = file stem = mask stem.
+background:
+  _target_: report.masks.BasicImageRetriever
+  source_dir: /mnt/data/MOU/breast/mammaprint
+  globs: ["*.mrxs"]
+  layer_name: MAMMAPRINT WSI (MIRAX)
+
+# --- mask layers: the cluster masks -------------------------------------------------
+# Raw xOpat `colormap` shader (not the built-in `classify`, whose `classify`
+# colormap assumes class values are uniform over [0,255] and would mis-colour a
+# 0..31 label image). A raw shader passes `infer_shader_configuration` through
+# untouched, so the boundaries we set are exactly what xOpat uses.
+#   cluster id c is stored as uint8 value c; xOpat normalises a pixel to c/255,
+#   so the class boundaries sit at c/255 (threshold.breaks). Bin 0 (value 0)
+#   is cluster 0 = background, hidden by threshold.mask[0]=0.
+mask_retrievers:
+  - _target_: report.masks.DriveMasksRetriever
+    dir_name: /mnt/projects/breast_cancer/tile_morph_clustering/masks_k32
+    layer_name: Clusters (k=32)
+    shader_conf:
+      type: colormap
+      params:
+        use_channel0: r
+        opacity: 0.55
+        connect:
+          type: bool
+          interactive: false
+          default: true
+        color:
+          type: custom_colormap
+          default:
+          - ''
+          - '#D34545'
+          - '#DF8E7A'
+          - '#D37C45'
+          - '#DFB57A'
+          - '#D3B345'
+          - '#DFDC7A'
+          - '#BCD345'
+          - '#BCDF7A'
+          - '#85D345'
+          - '#94DF7A'
+          - '#4ED345'
+          - '#7ADF87'
+          - '#45D373'
+          - '#7ADFAF'
+          - '#45D3AA'
+          - '#7ADFD6'
+          - '#45C5D3'
+          - '#7AC2DF'
+          - '#458ED3'
+          - '#7A9BDF'
+          - '#4557D3'
+          - '#817ADF'
+          - '#6945D3'
+          - '#A87ADF'
+          - '#A045D3'
+          - '#CF7ADF'
+          - '#D345CE'
+          - '#DF7AC9'
+          - '#D34597'
+          - '#DF7AA1'
+          - '#D34560'
+          steps: 32
+          mode: qualitative
+          interactive: true
+          title: 'Colormap:'
+          continuous: false
+        threshold:
+          # boundary before class c (c=1..31): value c/255
+          breaks:
+          - 0.003922
+          - 0.007843
+          - 0.011765
+          - 0.015686
+          - 0.019608
+          - 0.023529
+          - 0.027451
+          - 0.031373
+          - 0.035294
+          - 0.039216
+          - 0.043137
+          - 0.047059
+          - 0.05098
+          - 0.054902
+          - 0.058824
+          - 0.062745
+          - 0.066667
+          - 0.070588
+          - 0.07451
+          - 0.078431
+          - 0.082353
+          - 0.086275
+          - 0.090196
+          - 0.094118
+          - 0.098039
+          - 0.101961
+          - 0.105882
+          - 0.109804
+          - 0.113725
+          - 0.117647
+          - 0.121569
+          # cluster 0 = background -> transparent; 1..31 shown
+          mask:
+          - 0
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          - 1
+          interactive: false
+          inverted: true
+          maskOnly: true
+          toggleMask: true
+          title: Categories
+          min: 0
+          max: 1
+          minGap: 0.021505
+          step: null
+          pips:
+            mode: count
+            values: 32
+            density: 4
+            stepped: true
+
+# --- where the report is written ----------------------------------------------------
+save:
+  _target_: report.save.MLFlowReportStorer
+  artifact_path: report.html
+  metadata:
+    experiment_name: Breast Cancer   # MLflow experiment 61 (must exist on the server)
+    run_name: TileMorph k32 cluster masks
+    description: Per-slide k=32 cluster masks overlaid on the MAMMAPRINT WSIs
+    user: ${user}

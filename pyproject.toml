@@ -28,4 +28,4 @@ rationai-kube-jobs = { git = "ssh://git@gitlab.ics.muni.cz/rationai/infrastructu
 rationai-mlkit = { git = "https://gitlab.ics.muni.cz/rationai/digital-pathology/libraries/mlkit.git" }
 
 [dependency-groups]
-dev = ["mypy", "ruff"]
+dev = ["mypy", "ruff", "pytest>=8.3.2"]
