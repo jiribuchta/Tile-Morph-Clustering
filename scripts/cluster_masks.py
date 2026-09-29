@@ -88,7 +88,9 @@ def main():
     ap.add_argument("--base-level", action="store_true",
                     help="force canvas to the WSI base (level-0) size — same size as the original image")
     ap.add_argument("--report-conf", default="",
-                    help="path to write the report-tool Hydra config (reporter/<name>.yaml)")
+                    help="config dir for the report tool: writes <dir>/reporter/tile_clusters.yaml; "
+                         "run with: python -m report --config-dir <dir> reporter=tile_clusters "
+                         "user=<your_name> mlflow=kubas_external")
     ap.add_argument("--slides-wsi-dir", default="",
                     help="WSI directory to put in the report config background")
     args = ap.parse_args()
@@ -223,10 +225,12 @@ def main():
                 "    layer_name: Cluster labels (0=bg, value=cluster+1)",
             ]
         lines += ["save:", "  output_path: report.html"]
-        conf_path = Path(args.report_conf)
+        conf_path = Path(args.report_conf) / "reporter" / "tile_clusters.yaml"
         conf_path.parent.mkdir(parents=True, exist_ok=True)
         conf_path.write_text("\n".join(lines) + "\n")
         print(f"report config: {conf_path}")
+        print(f"run: python -m report --config-dir {Path(args.report_conf)} "
+              f"reporter=tile_clusters user=<your_name> mlflow=kubas_external")
 
     print(f"done: {len(slides) - len(failed)} written in {time.monotonic() - t0:.0f}s")
     if failed:
