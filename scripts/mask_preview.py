@@ -38,7 +38,7 @@ def main():
 
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
-    files = sorted(Path(args.masks).glob("*.tiff"))
+    files = [f for f in sorted(Path(args.masks).glob("*.tiff")) if not f.name.endswith(".rgb.tiff")]
     print(f"{len(files)} masks -> {dest}")
     for f in files:
         with tifffile.TiffFile(str(f)) as t:

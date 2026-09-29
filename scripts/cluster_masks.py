@@ -22,20 +22,20 @@ import numpy as np
 import pandas as pd
 
 
-def wsi_dims_at(path, mpp_x: float):
-    """(W, H) at the WSI level whose mpp best matches mpp_x; None if unreadable."""
+def wsi_report(path, mpp_x: float):
+    """{wh, level, mpp} at the WSI level whose mpp best matches mpp_x; None if unreadable."""
     try:
         import openslide
 
         with openslide.OpenSlide(str(path)) as s:
             base_mpp = s.mpp[0]
-            best, best_diff = None, None
+            best, best_diff, best_i = None, None, 0
             for i, (w, h) in enumerate(s.level_dimensions):
                 m = base_mpp / (2**i)
                 diff = abs(m - mpp_x) / mpp_x
                 if best_diff is None or diff < best_diff:
-                    best, best_diff = (w, h), diff
-            return best
+                    best, best_diff, best_i = (w, h), diff, i
+            return {"wh": best, "level": best_i, "mpp": base_mpp / (2**best_i)}
     except Exception:
         return None
 
@@ -50,9 +50,9 @@ def build_canvas(df_slide: pd.DataFrame, slide_row: pd.Series):
 
     W, H = int(x.max() + tw), int(y.max() + th)  # fallback: tile bounds
     source = "bounds"
-    dims = wsi_dims_at(slide_row["path"], float(slide_row["mpp_x"]))
-    if dims is not None:  # exact WSI canvas -> perfect xOpat alignment
-        W, H, source = max(W, dims[0]), max(H, dims[1]), "wsi"
+    report = wsi_report(slide_row["path"], float(slide_row["mpp_x"]))
+    if report is not None:  # exact WSI canvas -> perfect xOpat alignment
+        W, H, source = max(W, report["wh"][0]), max(H, report["wh"][1]), "wsi"
 
     canvas = np.zeros((H, W), dtype)
     x1 = np.clip(x, 0, W)
@@ -62,7 +62,7 @@ def build_canvas(df_slide: pd.DataFrame, slide_row: pd.Series):
     for xi, xj, yi, yj, v in zip(x1, x2, y1, y2, c, strict=True):
         if xj > xi and yj > yi:
             canvas[yi:yj, xi:xj] = int(v) + 1
-    return canvas, W, H, source
+    return canvas, W, H, source, report
 
 
 def main():
@@ -96,11 +96,12 @@ def main():
     t0 = time.monotonic()
     used_names = set()
     failed = []
+    align_rows = []
     for i, sid in enumerate(slides, 1):
         row = s.loc[sid]
         df = a[a["slide_id"] == sid]
         try:
-            canvas, W, H, source = build_canvas(df, row)
+            canvas, W, H, source, report = build_canvas(df, row)
             stem = Path(row["path"]).stem  # same name as the original WSI
             name, n = stem, 1
             while name in used_names:
@@ -109,14 +110,20 @@ def main():
             used_names.add(name)
             path = dest / f"{name}.tiff"
             img = pyvips.Image.new_from_array(canvas)
-            # canvas is the tiling level itself -> its mpp is the slide's mpp
-            mpp_y = float(row["mpp_y"]) if "mpp_y" in row else float(row["mpp_x"])
-            write_big_tiff(img, path, float(row["mpp_x"]), mpp_y)
+            # declare the WSI's OWN level mpp (not the rounded parquet value) so
+            # xOpat scales the overlay by exactly 1.0
+            mpp_x = float(report["mpp"]) if report else float(row["mpp_x"])
+            write_big_tiff(img, path, mpp_x, mpp_x)
             if args.rgb:
                 rgb = colorize(canvas, int(canvas.max()))
                 rgb_img = pyvips.Image.new_from_array(rgb)
-                write_big_tiff(rgb_img, dest / f"{name}.rgb.tiff", float(row["mpp_x"]), mpp_y)
+                write_big_tiff(rgb_img, dest / f"{name}.rgb.tiff", mpp_x, mpp_x)
                 del rgb, rgb_img
+            align_rows.append(
+                (name, f"{W}x{H}", source,
+                 f"{report['wh'][0]}x{report['wh'][1]}" if report else "UNREADABLE",
+                 report["level"] if report else "", mpp_x, float(row["mpp_x"]))
+            )
         except Exception as e:  # one bad WSI must not kill the batch
             failed.append((sid, str(e)))
             print(f"  [{i}/{len(slides)}] {sid[:12]}.. SKIPPED: {e}")
@@ -125,6 +132,13 @@ def main():
         print(f"  [{i}/{len(slides)}] {sid[:12]}.. {W}x{H} {source} "
               f"{len(df)} tiles {path.stat().st_size / 1e6:.0f} MB "
               f"({time.monotonic() - t0:.0f}s)")
+    align = pd.DataFrame(
+        align_rows, columns=["name", "canvas", "source", "wsi", "wsi_level", "mpp_written", "mpp_parquet"])
+    align["mpp_mismatch_pct"] = (
+        100 * (align["mpp_written"] - align["mpp_parquet"]).abs() / align["mpp_parquet"]).round(3)
+    align.to_csv(dest / "alignment.csv", index=False)
+    print(f"alignment report: {dest / 'alignment.csv'}")
+    print(align.to_string(index=False))
     print(f"done: {len(slides) - len(failed)} written in {time.monotonic() - t0:.0f}s")
     if failed:
         print(f"WARNING: {len(failed)} slides failed:")
