@@ -150,15 +150,20 @@ def main():
             img = to_base(pyvips.Image.new_from_array(canvas))
             write_big_tiff(img, path, mpp_x, mpp_x)
             if args.blend:
-                # same-level raster composite: canvas is exactly the WSI level (source=wsi)
+                # preview only: composite at most ~4096 px (a full-size PIL composite
+                # of a ~2.7e9-px WSI peaks ~30 GB and is pointless for an eyeball check)
                 try:
                     from PIL import Image as PImage
 
                     import openslide
 
                     with openslide.OpenSlide(str(row["path"])) as ws:
-                        lvl = report["level"] if report else 0
+                        bwd, bht = ws.level_dimensions[0]
+                        lvl = 0
+                        while (bwd / (2**lvl) > 4096 or bht / (2**lvl) > 4096) and lvl + 1 < ws.level_count:
+                            lvl += 1
                         wimg = ws.read_region((0, 0), lvl, ws.level_dimensions[lvl]).to_pil()
+                    # canvas (tiling level) straight to preview size — one nearest downscale
                     lab = PImage.fromarray(canvas).resize(
                         (wimg.width, wimg.height), PImage.NEAREST)
                     la = np.asarray(lab)
