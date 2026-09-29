@@ -43,7 +43,7 @@ def medoid_overview(r: dict, out: Path, i: int) -> None:
     lv, x, y, w, h = r["level"], r["x"], r["y"], r["w"], r["h"]
     with openslide.OpenSlide(p) as s:
         vendor = s.properties.get("openslide.vendor", "?")
-        afs = list(s.associated_files)
+        afs = list(s.associated_images)
         print(f"[{i}] {Path(p).name} vendor={vendor}")
         print(f"    associated_files: {afs if afs else 'none'}")
 
