@@ -88,9 +88,9 @@ def main():
     ap.add_argument("--base-level", action="store_true",
                     help="force canvas to the WSI base (level-0) size — same size as the original image")
     ap.add_argument("--report-conf", default="",
-                    help="config dir for the report tool: writes <dir>/reporter/tile_clusters.yaml; "
-                         "run with: python -m report --config-dir <dir> reporter=tile_clusters "
-                         "user=<your_name> mlflow=kubas_external")
+                    help="config dir for the report tool: writes <dir>/tile_clusters.yaml; "
+                         "run with: python -m report --config-dir <dir> --config-name tile_clusters "
+                         "user=<your_name>")
     ap.add_argument("--slides-wsi-dir", default="",
                     help="WSI directory to put in the report config background")
     args = ap.parse_args()
@@ -201,41 +201,57 @@ def main():
     if args.report_conf:
         k_total = int(a["cluster"].max())
         wsi_dir = str(Path(args.slides_wsi_dir) if args.slides_wsi_dir else "WSI_DIR")
-        lines = [
-            "defaults:",
-            "  - default",
-            "  - save: local",
-            "",
-            "title: Tile morphology clusters",
-            "background:",
-            "  _target_: report.masks.BasicImageRetriever",
-            f"  source_dir: {wsi_dir}",
-            '  globs: ["*.svs", "*.mrxs", "*.tif", "*.tiff"]',
-            "  layer_name: WSI background",
-            "mask_retrievers:",
-        ]
+        mask_lines = []
         if args.per_cluster:
             for ci in range(k_total + 1):
-                lines += [
-                    f"  - _target_: report.masks.BasicImageRetriever",
-                    f"    source_dir: {dest}/cluster_{ci:02d}",
-                    '    globs: ["*.tiff"]',
-                    f'    layer_name: Cluster {ci}',
+                mask_lines += [
+                    "    - _target_: report.masks.BasicImageRetriever",
+                    f"      source_dir: {dest}/cluster_{ci:02d}",
+                    '      globs: ["*.tiff"]',
+                    f"      layer_name: Cluster {ci}",
                 ]
         else:  # one mask per slide carrying all clusters
-            lines += [
-                "  - _target_: report.masks.BasicImageRetriever",
-                f"    source_dir: {dest}",
-                '    globs: ["*.tiff"]',
-                "    layer_name: Cluster labels (0=bg, value=cluster+1)",
+            mask_lines += [
+                "    - _target_: report.masks.BasicImageRetriever",
+                f"      source_dir: {dest}",
+                '      globs: ["*.tiff"]',
+                "      layer_name: Cluster labels (0=bg, value=cluster+1)",
             ]
-        lines += ["save:", "  output_path: report.html"]
-        conf_path = Path(args.report_conf) / "reporter" / "tile_clusters.yaml"
+        lines = [
+            "user: ???",
+            "",
+            "reporter:",
+            "  title: Tile morphology clusters",
+            "  background:",
+            "    _target_: report.masks.BasicImageRetriever",
+            f"    source_dir: {wsi_dir}",
+            '    globs: ["*.svs", "*.mrxs", "*.tif", "*.tiff"]',
+            "    layer_name: WSI background",
+            "  mask_retrievers:",
+            *mask_lines,
+            "  save:",
+            "    _target_: report.save.LocalReportStorer",
+            "    output_path: report.html",
+            "  metrics_run_ids: []",
+            "  template_asset_path: report_template.html",
+            "",
+            "metadata:",
+            "  user: ${user}",
+            "",
+            "mlflow:",
+            "  tracking_uri: https://mlflow.rationai.cloud.trusted.e-infra.cz/",
+            "",
+            "hydra:",
+            "  job:",
+            "    name: report",
+            "    chdir: true",
+        ]
+        conf_path = Path(args.report_conf) / "tile_clusters.yaml"
         conf_path.parent.mkdir(parents=True, exist_ok=True)
         conf_path.write_text("\n".join(lines) + "\n")
         print(f"report config: {conf_path}")
         print(f"run: python -m report --config-dir {Path(args.report_conf)} "
-              f"reporter=tile_clusters user=<your_name> mlflow=kubas_external")
+              f"--config-name tile_clusters user=<your_name>")
 
     print(f"done: {len(slides) - len(failed)} written in {time.monotonic() - t0:.0f}s")
     if failed:
