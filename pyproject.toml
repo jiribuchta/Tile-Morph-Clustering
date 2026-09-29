@@ -16,6 +16,7 @@ dependencies = [
     "scikit-learn",
     "rationai-sdk>=0.1.0",
     "rationai-mlkit",
+    "ratiopath",
 ]
 
 [project.optional-dependencies]
