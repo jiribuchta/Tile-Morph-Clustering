@@ -32,7 +32,9 @@ def main():
                     help="also report per-k mean-carcinoma spread (needs assignments.parquet)")
     args = ap.parse_args()
 
-    X = np.load(f"{args.out}/X_norm.npy")
+    # mmap: X is 465141x2560x4B ~4.8GB; mmap keeps RAM ~0 so np.load can't OOM-kill
+    # the process (a silent SIGKILL = "crash without any print") or bulk-read the mount.
+    X = np.load(f"{args.out}/X_norm.npy", mmap_mode="r")
     carcin = None
     if args.join_carcin:
         import pandas as pd
