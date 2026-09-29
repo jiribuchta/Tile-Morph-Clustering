@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyvips
 
 
 def wsi_report(path, mpp_x: float):
@@ -42,20 +43,12 @@ def wsi_report(path, mpp_x: float):
         return None
 
 
-def build_canvas(df_slide: pd.DataFrame, slide_row: pd.Series):
-    """uint8 canvas (value=cluster+1) at the tiling level; (canvas, W, H, source)."""
-    tw, th = int(slide_row["tile_extent_x"]), int(slide_row["tile_extent_y"])
+def paint(df_slide: pd.DataFrame, W: int, H: int, tw: int, th: int):
+    """uint8 canvas (value=cluster+1) at the tiling level, painted onto (H, W)."""
     dtype = np.uint16 if int(df_slide["cluster"].max()) >= 255 else np.uint8
     x = df_slide["x"].to_numpy()
     y = df_slide["y"].to_numpy()
     c = df_slide["cluster"].to_numpy()
-
-    W, H = int(x.max() + tw), int(y.max() + th)  # fallback: tile bounds
-    source = "bounds"
-    report = wsi_report(slide_row["path"], float(slide_row["mpp_x"]))
-    if report is not None:  # exact WSI canvas -> perfect xOpat alignment
-        W, H, source = max(W, report["wh"][0]), max(H, report["wh"][1]), "wsi"
-
     canvas = np.zeros((H, W), dtype)
     x1 = np.clip(x, 0, W)
     y1 = np.clip(y, 0, H)
@@ -64,7 +57,21 @@ def build_canvas(df_slide: pd.DataFrame, slide_row: pd.Series):
     for xi, xj, yi, yj, v in zip(x1, x2, y1, y2, c, strict=True):
         if xj > xi and yj > yi:
             canvas[yi:yj, xi:xj] = int(v) + 1
-    return canvas, W, H, source, report
+    return canvas
+
+
+def build_canvas(df_slide: pd.DataFrame, slide_row: pd.Series):
+    """(canvas, W, H, source, report) at the tiling level."""
+    tw, th = int(slide_row["tile_extent_x"]), int(slide_row["tile_extent_y"])
+    x = df_slide["x"].to_numpy()
+    y = df_slide["y"].to_numpy()
+    W, H = int(x.max() + tw), int(y.max() + th)  # fallback: tile bounds
+    report = wsi_report(slide_row["path"], float(slide_row["mpp_x"]))
+    if report is not None:  # exact WSI canvas -> perfect xOpat alignment
+        W, H, source = max(W, report["wh"][0]), max(H, report["wh"][1]), "wsi"
+    else:
+        source = "bounds"
+    return paint(df_slide, W, H, tw, th), W, H, source, report
 
 
 def main():
@@ -73,8 +80,6 @@ def main():
     ap.add_argument("--dest", required=True, help="dir to write <slide_id>.tiff into")
     ap.add_argument("--limit", type=int, default=0, help="only first N slides (0 = all)")
     ap.add_argument("--slides", nargs="*", help="only these slide_ids")
-    ap.add_argument("--rgb", action="store_true",
-                    help="also write <name>.rgb.tiff (RGB colored, viewable in xOpat)")
     ap.add_argument("--blend", action="store_true",
                     help="also write <name>.blend.png: mask blended onto the tissue "
                          "(ground truth for alignment, no xOpat involved)")
@@ -88,7 +93,6 @@ def main():
                     help="WSI directory to put in the report config background")
     args = ap.parse_args()
 
-    import pyvips
     from ratiopath.masks.write_big_tiff import write_big_tiff
 
     from mask_preview import colorize  # same dir as this script; one palette everywhere
@@ -121,16 +125,15 @@ def main():
                 name = f"{stem}-{n}"
                 n += 1
             used_names.add(name)
-            if args.base_level and report is not None:
-                from PIL import Image as PImage
-
-                bw, bh = report["base_wh"]
-                if (bw, bh) != (W, H):
-                    canvas = np.asarray(
-                        PImage.fromarray(canvas).resize((bw, bh), PImage.NEAREST))
-                    W, H = bw, bh
+            if args.base_level and report is not None and (W, H) != tuple(report["base_wh"]):
+                # same dimensions as the original WSI (level 0), streamed through vips —
+                # the 2x upscale never materialises in RAM (a full-size PIL resize OOMs).
+                f = report["base_wh"][0] / W  # == H0/H for isotropic WSIs
+                to_base = lambda v: v.resize(f, kernel=pyvips.Kernel.NEAREST)
                 mpp_x = float(report["base_mpp"])  # base-level mpp
+                W, H = tuple(report["base_wh"])
             else:
+                to_base = lambda v: v
                 mpp_x = float(report["mpp"]) if report else float(row["mpp_x"])
             if args.per_cluster:
                 k = int(df["cluster"].max())
@@ -138,34 +141,33 @@ def main():
                     cmask = (canvas == ci + 1).astype(np.uint8)
                     cdir = dest / f"cluster_{ci:02d}"
                     cdir.mkdir(parents=True, exist_ok=True)
-                    cimg = pyvips.Image.new_from_array(cmask)
+                    cimg = to_base(pyvips.Image.new_from_array(cmask))
                     write_big_tiff(cimg, cdir / f"{name}.tiff", mpp_x, mpp_x)
                     del cmask, cimg
             path = dest / f"{name}.tiff"
-            img = pyvips.Image.new_from_array(canvas)
+            img = to_base(pyvips.Image.new_from_array(canvas))
             write_big_tiff(img, path, mpp_x, mpp_x)
-            if args.rgb:
-                rgb = colorize(canvas, int(canvas.max()))
-                rgb_img = pyvips.Image.new_from_array(rgb)
-                write_big_tiff(rgb_img, dest / f"{name}.rgb.tiff", mpp_x, mpp_x)
-                del rgb, rgb_img
             if args.blend:
                 # same-level raster composite: canvas is exactly the WSI level (source=wsi)
-                from PIL import Image as PImage
+                try:
+                    from PIL import Image as PImage
 
-                import openslide
+                    import openslide
 
-                with openslide.OpenSlide(str(row["path"])) as ws:
-                    lvl = report["level"] if report else 0
-                    wimg = ws.read_region((0, 0), lvl, ws.level_dimensions[lvl]).to_pil()
-                lab = PImage.fromarray(canvas).resize((wimg.width, wimg.height), PImage.NEAREST)
-                la = np.asarray(lab)
-                alpha = np.where(la > 0, 190, 0).astype(np.uint8)
-                col = PImage.fromarray(colorize(la, int(la.max())))
-                out = wimg.convert("RGBA")
-                out.paste(col, (0, 0), PImage.fromarray(alpha, "L"))
-                out.convert("RGB").save(dest / f"{name}.blend.png")
-                del wimg, out, col
+                    with openslide.OpenSlide(str(row["path"])) as ws:
+                        lvl = report["level"] if report else 0
+                        wimg = ws.read_region((0, 0), lvl, ws.level_dimensions[lvl]).to_pil()
+                    lab = PImage.fromarray(canvas).resize(
+                        (wimg.width, wimg.height), PImage.NEAREST)
+                    la = np.asarray(lab)
+                    alpha = np.where(la > 0, 190, 0).astype(np.uint8)
+                    col = PImage.fromarray(colorize(la, int(la.max())))
+                    out = wimg.convert("RGBA")
+                    out.paste(col, (0, 0), PImage.fromarray(alpha, "L"))
+                    out.convert("RGB").save(dest / f"{name}.blend.png")
+                    del wimg, out, col
+                except Exception as e:  # preview only — never fail the mask itself
+                    print(f"  {name}: blend preview failed: {e}")
             align_rows.append(
                 (name, f"{W}x{H}", source,
                  f"{report['wh'][0]}x{report['wh'][1]}" if report else "UNREADABLE",
@@ -181,13 +183,15 @@ def main():
               f"({time.monotonic() - t0:.0f}s)")
     align = pd.DataFrame(
         align_rows, columns=["name", "canvas", "source", "wsi", "wsi_level", "mpp_written", "mpp_parquet"])
+    for col in ("mpp_written", "mpp_parquet"):  # numeric even when 0 rows (empty -> object)
+        align[col] = pd.to_numeric(align[col], errors="coerce")
     align["mpp_mismatch_pct"] = (
         100 * (align["mpp_written"] - align["mpp_parquet"]).abs() / align["mpp_parquet"]).round(3)
     align.to_csv(dest / "alignment.csv", index=False)
     print(f"alignment report: {dest / 'alignment.csv'}")
     print(align.to_string(index=False))
 
-    if args.report_conf and args.per_cluster:
+    if args.report_conf:
         k_total = int(a["cluster"].max())
         wsi_dir = str(Path(args.slides_wsi_dir) if args.slides_wsi_dir else "WSI_DIR")
         lines = [
@@ -203,12 +207,20 @@ def main():
             "  layer_name: WSI background",
             "mask_retrievers:",
         ]
-        for ci in range(k_total + 1):
+        if args.per_cluster:
+            for ci in range(k_total + 1):
+                lines += [
+                    f"  - _target_: report.masks.BasicImageRetriever",
+                    f"    source_dir: {dest}/cluster_{ci:02d}",
+                    '    globs: ["*.tiff"]',
+                    f'    layer_name: Cluster {ci}',
+                ]
+        else:  # one mask per slide carrying all clusters
             lines += [
-                f"  - _target_: report.masks.BasicImageRetriever",
-                f"    source_dir: {dest}/cluster_{ci:02d}",
+                "  - _target_: report.masks.BasicImageRetriever",
+                f"    source_dir: {dest}",
                 '    globs: ["*.tiff"]',
-                f'    layer_name: Cluster {ci}',
+                "    layer_name: Cluster labels (0=bg, value=cluster+1)",
             ]
         lines += ["save:", "  output_path: report.html"]
         conf_path = Path(args.report_conf)
