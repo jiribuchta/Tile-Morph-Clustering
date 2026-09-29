@@ -71,10 +71,14 @@ def main():
     ap.add_argument("--dest", required=True, help="dir to write <slide_id>.tiff into")
     ap.add_argument("--limit", type=int, default=0, help="only first N slides (0 = all)")
     ap.add_argument("--slides", nargs="*", help="only these slide_ids")
+    ap.add_argument("--rgb", action="store_true",
+                    help="also write <name>.rgb.tiff (RGB colored, viewable in xOpat)")
     args = ap.parse_args()
 
     import pyvips
     from ratiopath.masks.write_big_tiff import write_big_tiff
+
+    from mask_preview import colorize  # same dir as this script; one palette everywhere
 
     a = pd.read_parquet(f"{args.out}/assignments.parquet")
     s = pd.read_parquet(f"{args.out}/slides.parquet")
@@ -108,6 +112,11 @@ def main():
             # canvas is the tiling level itself -> its mpp is the slide's mpp
             mpp_y = float(row["mpp_y"]) if "mpp_y" in row else float(row["mpp_x"])
             write_big_tiff(img, path, float(row["mpp_x"]), mpp_y)
+            if args.rgb:
+                rgb = colorize(canvas, int(canvas.max()))
+                rgb_img = pyvips.Image.new_from_array(rgb)
+                write_big_tiff(rgb_img, dest / f"{name}.rgb.tiff", float(row["mpp_x"]), mpp_y)
+                del rgb, rgb_img
         except Exception as e:  # one bad WSI must not kill the batch
             failed.append((sid, str(e)))
             print(f"  [{i}/{len(slides)}] {sid[:12]}.. SKIPPED: {e}")
