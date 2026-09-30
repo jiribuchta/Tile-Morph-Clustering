@@ -28,13 +28,23 @@ background:
   layer_name: MAMMAPRINT WSI (MIRAX)
 
 # --- mask layers: the cluster masks -------------------------------------------------
-# Raw xOpat `colormap` shader (not the built-in `classify`, whose `classify`
-# colormap assumes class values are uniform over [0,255] and would mis-colour a
-# 0..31 label image). A raw shader passes `infer_shader_configuration` through
+# Per-cluster on/off: the xOpat colormap shader's `threshold.pips` + `toggleMask`
+# render a "Categories" panel with ONE toggle per cluster. Toggle any cluster to
+# show/hide it WITHOUT touching the others - that is the per-cluster on/off.
+# (This is NOT "32 layers": one label mask per slide already carries all 32
+#  clusters; the Categories pips are how xOpat switches individual ones.)
+#
+# Raw xOpat `colormap` shader (not the built-in `classify`, whose colormap
+# assumes class values are uniform over [0,255] and would mis-colour a 0..31
+# label image). A raw shader passes `infer_shader_configuration` through
 # untouched, so the boundaries we set are exactly what xOpat uses.
 #   cluster id c is stored as uint8 value c; xOpat normalises a pixel to c/255,
 #   so the class boundaries sit at c/255 (threshold.breaks). Bin 0 (value 0)
 #   is cluster 0 = background, hidden by threshold.mask[0]=0.
+#
+# Colors: 32 slots, index i = cluster i. Slot 0 = transparent (background).
+# Clusters 1..31 use an even hue-wheel palette with alternating light/saturate
+# so *neighbouring* clusters (the ones that touch on the WSI) are maximally distinct.
 mask_retrievers:
   - _target_: report.masks.DriveMasksRetriever
     dir_name: /mnt/projects/breast_cancer/tile_morph_clustering/masks_k32
@@ -51,38 +61,38 @@ mask_retrievers:
         color:
           type: custom_colormap
           default:
-          - ''
-          - '#D34545'
-          - '#DF8E7A'
-          - '#D37C45'
-          - '#DFB57A'
-          - '#D3B345'
-          - '#DFDC7A'
-          - '#BCD345'
-          - '#BCDF7A'
-          - '#85D345'
-          - '#94DF7A'
-          - '#4ED345'
-          - '#7ADF87'
-          - '#45D373'
-          - '#7ADFAF'
-          - '#45D3AA'
-          - '#7ADFD6'
-          - '#45C5D3'
-          - '#7AC2DF'
-          - '#458ED3'
-          - '#7A9BDF'
-          - '#4557D3'
-          - '#817ADF'
-          - '#6945D3'
-          - '#A87ADF'
-          - '#A045D3'
-          - '#CF7ADF'
-          - '#D345CE'
-          - '#DF7AC9'
-          - '#D34597'
-          - '#DF7AA1'
-          - '#D34560'
+          - ''            # cluster 0 = background -> transparent (masked by threshold.mask[0]=0)
+          - "#A64630"      # cluster 1
+          - "#F4A87B"      # cluster 2
+          - "#A67230"      # cluster 3
+          - "#F4D67B"      # cluster 4
+          - "#A69F30"      # cluster 5
+          - "#E5F47B"      # cluster 6
+          - "#81A630"      # cluster 7
+          - "#B8F47B"      # cluster 8
+          - "#55A630"      # cluster 9
+          - "#8AF47B"      # cluster 10
+          - "#30A638"      # cluster 11
+          - "#7BF499"      # cluster 12
+          - "#30A664"      # cluster 13
+          - "#7BF4C7"      # cluster 14
+          - "#30A690"      # cluster 15
+          - "#7BF4F4"      # cluster 16
+          - "#3090A6"      # cluster 17
+          - "#7BC7F4"      # cluster 18
+          - "#3064A6"      # cluster 19
+          - "#7B99F4"      # cluster 20
+          - "#3038A6"      # cluster 21
+          - "#8A7BF4"      # cluster 22
+          - "#5530A6"      # cluster 23
+          - "#B87BF4"      # cluster 24
+          - "#8130A6"      # cluster 25
+          - "#E57BF4"      # cluster 26
+          - "#A6309F"      # cluster 27
+          - "#F47BD6"      # cluster 28
+          - "#A63072"      # cluster 29
+          - "#F47BA8"      # cluster 30
+          - "#A63046"      # cluster 31
           steps: 32
           mode: qualitative
           interactive: true
@@ -103,13 +113,13 @@ mask_retrievers:
           - 0.039216
           - 0.043137
           - 0.047059
-          - 0.05098
+          - 0.050980
           - 0.054902
           - 0.058824
           - 0.062745
           - 0.066667
           - 0.070588
-          - 0.07451
+          - 0.074510
           - 0.078431
           - 0.082353
           - 0.086275
