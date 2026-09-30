@@ -35,7 +35,7 @@ misalignment).
 
     # generate the report (from this repo root)
     cd report
-    pdm report --config-dir ../report_conf reporter=tile_morph_k32 user=<your_name>
+    pdm report --config-dir ../report_conf +reporter=tile_morph_k32 user=<your_name>
     # the `mlflow` tracking group defaults to `kubas_cluster` (in-cluster);
     # override outside the cluster, e.g. mlflow=kubas_external  (or mlflow=local)
 
@@ -45,7 +45,15 @@ filename stem, and stores an MLflow run (`Breast Cancer` experiment) with
 mask layered on top (custom `colormap`; cluster 0 transparent, one colour per
 cluster id).
 
+### Which slides appear
+The report shows exactly the slides in `background.globs` (one card each),
+joined to the masks by file stem. Default `globs: ["*.mrxs"]` = every WSI under
+`source_dir` (blank cards for the ones without a mask). To show **only** the
+slides you made masks for, set `background.globs` to their stems, e.g.
+`globs: ["P2023_02768.mrxs"]`.
+
 ### If a path differs
 Edit `report_conf/reporter/tile_morph_k32.yaml`:
 - `background.source_dir` — WSI root (the `data_path` used by `run_clustering`)
+- `background.globs` — which slides to show (see above)
 - `mask_retrievers[0].dir_name` — where `make_masks` wrote the `.tiff` masks

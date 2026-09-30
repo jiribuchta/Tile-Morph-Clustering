@@ -123,6 +123,29 @@ def test_paint_clamps_to_bounds():
     assert arr[0, 0] == 0
 
 
+def test_stream_tiles_assigns_nearest_centroid(tmp_path: Path):
+    """stream_tiles (full mode): each tile -> nearest centroid, and N>32 tiles per
+    slide in one batch (the axis regression that crashed the k=32 full run)."""
+    K, D, N = 4, 4, 40  # more tiles than centroids, in a single batch
+    C = np.eye(K, dtype=np.float32)  # centroids on the 4 axes
+
+    sids = np.array([b"sA"] * N, dtype=object)  # one wanted slide
+    x = np.arange(N, dtype=np.int64) * 64
+    y = np.zeros(N, dtype=np.int64)
+    expected = np.array([j % K for j in range(N)])  # tile j -> centroid j%K
+    emb = C[expected]  # each embedding points at its expected centroid
+
+    pf = tmp_path / "tiles.parquet"
+    pd.DataFrame(
+        {"slide_id": sids, "x": x, "y": y, "embedding": list(emb)}
+    ).to_parquet(pf, index=False)
+
+    got = make_masks.stream_tiles([("tiles", str(pf), 0)], {b"sA".hex()}, C)
+    tiles = got[b"sA".hex()]
+    assert len(tiles) == N  # every tile assigned (no index-32 overflow)
+    assert all(c == e for (_, _, c), e in zip(tiles, expected))
+
+
 def test_main_run_sampled_end_to_end(tmp_path: Path):
     """main_run: clustering dir -> one .tiff per slide + manifest.json (sampled mode).
 
