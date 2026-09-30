@@ -35,6 +35,7 @@ from omegaconf import DictConfig
 from ratiopath.masks import write_big_tiff
 from rationai.mlkit import autolog
 from rationai.mlkit.lightning.loggers import MLFlowLogger
+from tqdm import tqdm
 
 
 def hex_id(v) -> str:
@@ -119,7 +120,7 @@ def stream_tiles(parts, slide_hexes: set[str], centroids: np.ndarray) -> dict[st
     """Single pass over tile parquets; paint nearest-centroid cluster for the wanted slides."""
     acc: dict[str, list[tuple[int, int, int]]] = {h: [] for h in slide_hexes}
     C = centroids
-    for _name, local, _size in parts:
+    for _name, local, _size in tqdm(parts):
         pf = pq.ParquetFile(local)
         for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=8192):
             n = len(batch)
