@@ -23,7 +23,7 @@ title: TileMorph clustering (k=32) - MAMMAPRINT
 # rglob finds every *.mrxs under source_dir; item_name = file stem = mask stem.
 background:
   _target_: report.masks.BasicImageRetriever
-  source_dir: /mnt/data/MOU/breast/mammaprint
+  source_dir: /mnt/bioptic_tree
   globs: ["*.mrxs"]
   layer_name: MAMMAPRINT WSI (MIRAX)
 

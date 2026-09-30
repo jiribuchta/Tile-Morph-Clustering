@@ -141,7 +141,7 @@ def stream_tiles(parts, slide_hexes: set[str], centroids: np.ndarray) -> dict[st
             norms = np.linalg.norm(e, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             e /= norms
-            clusters = np.argmax(C @ e.T, axis=1)
+            clusters = np.argmax(C @ e.T, axis=0)
             for i, k in enumerate(keep):
                 acc[hex_id(sids[k])].append(
                     (int(xs[i]), int(ys[i]), int(clusters[i]))
