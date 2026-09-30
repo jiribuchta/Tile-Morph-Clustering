@@ -47,7 +47,7 @@ background:
 # so *neighbouring* clusters (the ones that touch on the WSI) are maximally distinct.
 mask_retrievers:
   - _target_: report.masks.DriveMasksRetriever
-    dir_name: /mnt/projects/breast_cancer/tile_morph_clustering/masks_k32
+    dir_name: /mnt/bioptic_tree
     layer_name: Clusters (k=32)
     shader_conf:
       type: colormap
