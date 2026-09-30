@@ -68,7 +68,7 @@ def build_slide_mask(
     tile_extent: tuple[int, int],
 ) -> tuple[np.ndarray, float, float]:
     """tiles: [(x, y, cluster)]; returns (level-0 uint8 array, mpp_x, mpp_y)."""
-    s = openslide.OpenSlideSlide(slide["path"])
+    s = openslide.OpenSlide(slide["path"])
     try:
         l0 = s.level_dimensions[0]
         lref = s.level_dimensions[level]
@@ -95,7 +95,7 @@ def build_slide_mask(
 def verify_mask(path: Path, tiles: list[tuple[int, int, int]], level: int) -> None:
     """Re-open the written mask; each tile's top-left corner pixel (its exclusive
     pixel under row-major painting) must equal its cluster."""
-    s = openslide.OpenSlideSlide(str(path))
+    s = openslide.OpenSlide(str(path))
     try:
         l0 = s.level_dimensions[0]
         lref = s.level_dimensions[level]
