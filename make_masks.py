@@ -22,7 +22,7 @@ slides.parquet); mapped to level 0 with the slide's own level_downsamples.
 
 Run (from repo root, on the cluster where WSIs + tile parquets are mounted):
     uv run -m make_masks +data=mmci_b20_24_train +experiment/masks=mammaprint
-    # limit: slides=5 parts=100   (slides=0 / parts=0 = all)
+    # which slides: slides=5 (first 5) | slides=<slide name/ID> (one slide) | 0 = all
 """
 
 import json
@@ -305,6 +305,21 @@ def write_report_conf(masks_dir: Path, slides_path: Path, out_dir: Path) -> Path
 
 # ---- main ----
 
+def _select_slides(slides: pd.DataFrame, spec) -> pd.DataFrame:
+    """`spec`: 0 | "all" = all, int N = first N (carcinoma order), str = a slide name/ID."""
+    if spec is None or spec == 0 or (
+        isinstance(spec, str) and spec.strip().lower() in {"0", "all"}
+    ):
+        return slides
+    if isinstance(spec, str):
+        q = spec.strip().lower()
+        m = slides[slides["path"].str.lower().str.contains(q, regex=False)]
+        if len(m) == 0:
+            raise SystemExit(f"no slide matches {spec!r} in slides.parquet")
+        return m
+    return slides.head(int(spec))
+
+
 def main_run(config: DictConfig) -> None:
     sys.stdout.reconfigure(line_buffering=True)
     t0 = time.monotonic()
@@ -318,31 +333,21 @@ def main_run(config: DictConfig) -> None:
     if C.shape[0] >= 255:
         raise SystemExit(f"centroids={C.shape[0]} won't fit the uint8 +1 offset (max 255)")
 
-    if int(config.slides) > 0:
-        slides = slides.head(int(config.slides))
-    wanted = set(slides["slide_id"])
     level = int(slides["level"].iloc[0])
     tex = (int(slides["tile_extent_x"].iloc[0]), int(slides["tile_extent_y"].iloc[0]))
-    print(f"{len(slides)} slides, k={C.shape[0]}, out={out}, t0={time.monotonic() - t0:.0f}s")
+    slides = _select_slides(slides, config.slides)
+    wanted = set(slides["slide_id"])
+    print(f"{len(slides)} slide(s), k={C.shape[0]}, out={out}, t0={time.monotonic() - t0:.0f}s")
 
-    # ---- index (cached): slide_id -> parts, from the tile parquets' slide_id column
+    # ---- index (cached): slide_id -> parts. This IS the "find the right parquet
+    # files" step: once built (or cached), each slide's files are a plain lookup.
     from cluster_tiles import resolve_sources
 
     parts, _ = resolve_sources(config.data)
-    limited_parts = int(getattr(config, "parts", 0) or 0) > 0
-    if limited_parts:
-        parts = parts[: int(config.parts)]
     print(f"  {len(parts)} tile parts, ~{sum(p[2] for p in parts) / 1e9:.1f} GB total")
-
     index_path = out / "slide_parts_index.json"
-    index = load_index(index_path) if not limited_parts else None
-    if limited_parts:
-        # a limited index would be incomplete -> build in-memory, never cache it
-        print("  index: scanning slide_id (parts limited -> not cached)...")
-        ti = time.monotonic()
-        index = build_index(parts)
-        print(f"  index: {len(index)} slides, {time.monotonic() - ti:.0f}s (not cached)")
-    elif index is not None:
+    index = load_index(index_path)
+    if index is not None:
         print(f"  index: loaded {len(index)} slides from {index_path}")
     else:
         print("  index: scanning slide_id (cheap, cached after this run)...")

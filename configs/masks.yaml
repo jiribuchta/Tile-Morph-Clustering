@@ -5,11 +5,9 @@ defaults:
 # Output of `run_clustering` (slides.parquet, centroids.npy).
 clustering_out: ${project_path}/clustering/k32
 
-# First N slides to mask (0 = all). Keep small for smoke tests.
+# Which slides to mask: 0 | "all" = all | N = first N (by carcinoma order) |
+# <slide name/ID> = just that slide. The index finds each slide's parquet files.
 slides: 0
-
-# Max tile parts to scan/index/read (0 = all). Limited runs are not cached.
-parts: 0
 
 out: ???
 
@@ -20,4 +18,3 @@ metadata:
   description: Per-slide cluster masks (BigTIFF, xOpat overlay) + report config, from clustering outputs
   hyperparams:
     slides: ${slides}
-    parts: ${parts}

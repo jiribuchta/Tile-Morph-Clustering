@@ -188,7 +188,7 @@ def test_main_run_end_to_end(tmp_path: Path):
     cfg = OmegaConf.create({
         "clustering_out": str(clu),
         "data": {"paths": {"local": str(data_dir)}},
-        "slides": 2, "parts": 0, "out": str(out),
+        "slides": 2, "out": str(out),
     })
     make_masks.main_run(cfg)
 
@@ -223,6 +223,20 @@ def test_main_run_end_to_end(tmp_path: Path):
     make_masks.main_run(cfg)
     mani2 = json.loads((out / "manifest.json").read_text())
     assert {s["slide_id"] for s in mani2["slides"]} == set()  # none newly written
+
+
+def test_select_slides_count_and_name():
+    """slides=0|'all' = all; N = first N (carcinoma order); <name/ID> = the match."""
+    df = pd.DataFrame({
+        "slide_id": [b"sA", b"sB", b"sC"],
+        "path": ["/wsi/A.mrxs", "/wsi/B.mrxs", "/wsi/C.mrxs"],
+    })
+    all_ids = df["slide_id"].tolist()
+    assert make_masks._select_slides(df, 0)["slide_id"].tolist() == all_ids
+    assert make_masks._select_slides(df, "all")["slide_id"].tolist() == all_ids
+    assert make_masks._select_slides(df, 2)["path"].tolist() == ["/wsi/A.mrxs", "/wsi/B.mrxs"]
+    assert make_masks._select_slides(df, "B.mrxs")["path"].tolist() == ["/wsi/B.mrxs"]
+    assert make_masks._select_slides(df, "a.mrxs")["path"].tolist() == ["/wsi/A.mrxs"]
 
 
 def test_index_build_and_cache_roundtrip(tmp_path: Path):
