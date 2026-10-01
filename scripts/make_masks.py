@@ -16,5 +16,5 @@ submit_job(
         "uv run python -c 'from mlflow.tracking import MlflowClient; e = MlflowClient().get_experiment_by_name(\"Breast Cancer\"); assert e, \"no Breast Cancer exp\"; print(\"tracking OK, exp\", e.experiment_id)'",
         "uv run -m make_masks +data=mmci_b20_24_train +experiment/masks=mammaprint mode=full"
     ],
-    storage=[storage.secure.DATA, storage.secure.PROJECTS],
+    storage=[storage.secure.DATA, storage.secure.PROJECTS, storage.secure.BIOPTIC_TREE],
 )
