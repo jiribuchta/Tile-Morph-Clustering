@@ -375,6 +375,7 @@ def main_run(config: DictConfig) -> None:
 
     print(f"wrote {ok} new, {skip} skipped, {fail} failed -> {out} "
           f"({time.monotonic() - t0:.0f}s total)")
+    print("to make report run: python -m report --config-dir /mnt/projects/breast_cancer/tile_morph_clustering/masks_k32_v2/report_conf/ +reporter=tile_morph_k32 user=jiribuchta")
 
 
 def _log_dir(logger: MLFlowLogger, d: Path, artifact_path: str) -> None:
