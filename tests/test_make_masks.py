@@ -14,15 +14,15 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pyvips
 import pytest
+import pyvips
 from omegaconf import OmegaConf
+
 
 # stub openslide before importing make_masks
 stub = types.ModuleType("openslide")
 sys.modules.setdefault("openslide", stub)
 import make_masks  # noqa: E402
-import make_mask_slide  # noqa: E402
 
 
 class _Region:
@@ -127,10 +127,9 @@ def test_paint_clamps_to_bounds():
     assert arr[0, 0] == 0
 
 
-def test_stream_tiles_assigns_nearest_centroid(tmp_path: Path):
-    """stream_tiles (full mode): each tile -> nearest centroid, and N>32 tiles per
-    slide in one batch (the axis regression that crashed the k=32 full run)."""
-    K, D, N = 4, 4, 40  # more tiles than centroids, in a single batch
+def test_stream_slide_tiles_assigns_nearest_centroid(tmp_path: Path):
+    """stream_slide_tiles: nearest-centroid, N>32 tiles/slide in one batch (axis regression)."""
+    K, _D, N = 4, 4, 40  # more tiles than centroids, in a single batch
     C = np.eye(K, dtype=np.float32)  # centroids on the 4 axes
 
     sids = np.array([b"sA"] * N, dtype=object)  # one wanted slide
@@ -144,19 +143,14 @@ def test_stream_tiles_assigns_nearest_centroid(tmp_path: Path):
         {"slide_id": sids, "x": x, "y": y, "embedding": list(emb)}
     ).to_parquet(pf, index=False)
 
-    got = make_masks.stream_tiles([("tiles", str(pf), 0)], {b"sA".hex()}, C)
-    tiles = got[b"sA".hex()]
-    assert len(tiles) == N  # every tile assigned (no index-32 overflow)
+    got = make_masks.stream_slide_tiles([str(pf)], b"sA".hex(), C)
+    assert len(got) == N  # every tile assigned (no index-32 overflow)
     # labels use the +1 offset: cluster c -> label c+1
-    assert all(c == e + 1 for (_, _, c), e in zip(tiles, expected))
+    assert all(c == e + 1 for (_, _, c), e in zip(got, expected, strict=True))
 
 
-def test_main_run_sampled_end_to_end(tmp_path: Path):
-    """main_run: clustering dir -> one .tiff per slide + manifest.json (sampled mode).
-
-    2 synthetic slides; only slide A has assigned tiles. Verifies the full
-    config-driven path: parquet reads, slide limit, per-slide mask, manifest.
-    """
+def test_main_run_end_to_end(tmp_path: Path):
+    """main_run in one shot: data -> index -> masks -> manifest -> report conf."""
     l0_w, l0_h, level, tex_w, tex_h = 2048, 1024, 1, 64, 64
 
     def _wsi(name: str) -> Path:
@@ -169,6 +163,7 @@ def test_main_run_sampled_end_to_end(tmp_path: Path):
         return f
 
     wsi_a, wsi_b = _wsi("slide_A.mrxs"), _wsi("slide_B.mrxs")
+    K = np.eye(8, dtype=np.float32)
 
     clu = tmp_path / "clustering"
     clu.mkdir()
@@ -178,40 +173,102 @@ def test_main_run_sampled_end_to_end(tmp_path: Path):
         {"slide_id": "B", "path": str(wsi_b), "level": level,
          "tile_extent_x": tex_w, "tile_extent_y": tex_h},
     ]).to_parquet(clu / "slides.parquet", index=False)
-    # level-1 coords: tile (0,0) + overlapping tile per slide
-    pd.DataFrame([
-        {"slide_id": "A", "x": 0, "y": 0, "cluster": 4},
-        {"slide_id": "A", "x": 32, "y": 32, "cluster": 9},
-        {"slide_id": "B", "x": 0, "y": 0, "cluster": 6},
-    ]).to_parquet(clu / "assignments.parquet", index=False)
-    np.save(clu / "centroids.npy", np.eye(8, dtype=np.float32))
+    np.save(clu / "centroids.npy", K)
+
+    # sharded tile data (the `data.paths.local` dir): one interleaved part
+    data_dir = tmp_path / "data"
+    (data_dir / "tiles").mkdir(parents=True)
+    _shard(data_dir / "tiles" / "p0.parquet", [
+        ("A", 0, 0, K[4]),
+        ("A", 32, 32, K[7]),
+        ("B", 0, 0, K[6]),
+    ])
 
     out = tmp_path / "masks"
     cfg = OmegaConf.create({
-        "clustering_out": str(clu), "mode": "sampled",
-        "slides": 2, "out": str(out),
+        "clustering_out": str(clu),
+        "data": {"paths": {"local": str(data_dir)}},
+        "slides": 2, "parts": 0, "out": str(out),
     })
     make_masks.main_run(cfg)
 
     # one mask per slide, named after the WSI stem (Path(...).stem strips .mrxs)
     assert (out / "slide_A.tiff").exists()
     assert (out / "slide_B.tiff").exists()
+    # index was built + cached (the no-re-scan win)
+    assert (out / "slide_parts_index.json").exists()
+    idx = json.loads((out / "slide_parts_index.json").read_text())
+    assert set(idx) == {"A", "B"}
     # manifest records both slides + k
     mani = json.loads((out / "manifest.json").read_text())
     assert {s["slide_id"] for s in mani["slides"]} == {"A", "B"}
     assert mani["k"] == 8
-    # painted tiles carry cluster id + 1 (the +1 offset); slides are independent
+    # report config written, patched to SlideRetriever over the 2 WSIs
+    rpt = out / "report_conf" / "reporter" / "tile_morph_k32.yaml"
+    assert rpt.exists()
+    y = rpt.read_text()
+    assert "report.masks.SlideRetriever" in y
+    assert str(wsi_a) in y and str(wsi_b) in y
+    # painted tiles carry cluster id + 1 (nearest-centroid); slides independent
     a = stub.OpenSlideSlide(str(out / "slide_A.tiff"))
     assert a.level_dimensions[0] == (l0_w, l0_h)
-    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 5   # A tile (0,0), cluster 4
-    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 10  # A tile (32,32), cluster 9
+    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 5   # A tile (0,0) -> cluster 4
+    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 8  # A tile (32,32) -> cluster 7
     a.close()
     b = stub.OpenSlideSlide(str(out / "slide_B.tiff"))
-    assert int(b._l0.crop(1, 1, 1, 1).numpy().item()) == 7   # B tile (0,0), cluster 6
+    assert int(b._l0.crop(1, 1, 1, 1).numpy().item()) == 7   # B tile (0,0) -> cluster 6
     b.close()
 
+    # re-run: masks already on disk -> all skipped (resumable, no re-scan)
+    make_masks.main_run(cfg)
+    mani2 = json.loads((out / "manifest.json").read_text())
+    assert {s["slide_id"] for s in mani2["slides"]} == set()  # none newly written
 
-# ---- make_mask_slide: per-slide, resumable, failure-isolated ---------------
+
+def test_index_build_and_cache_roundtrip(tmp_path: Path):
+    """build_index -> save_index -> load_index round-trip (interleaved parts)."""
+    p0, p1 = tmp_path / "p0.parquet", tmp_path / "p1.parquet"
+    _shard(p0, [(b"\x01" * 8, 0, 0, [1, 0, 0, 0]), (b"\x02" * 8, 0, 0, [0, 1, 0, 0])])
+    _shard(p1, [(b"\x01" * 8, 0, 0, [0, 0, 1, 0]), (b"\x02" * 8, 0, 0, [0, 0, 0, 1])])
+    parts = [("p0", str(p0), 0), ("p1", str(p1), 0)]
+    index = make_masks.build_index(parts)
+    assert set(index) == {b"\x01".hex() * 8, b"\x02".hex() * 8}
+    assert sorted(index[b"\x01".hex() * 8]) == [str(p0), str(p1)]  # both parts
+
+    ipath = tmp_path / "idx.json"
+    make_masks.save_index(ipath, index)
+    assert make_masks.load_index(ipath) == index
+    assert make_masks.load_index(tmp_path / "nope.json") is None
+
+
+def test_write_report_conf(tmp_path: Path):
+    """write_report_conf: masks+WSI map -> patched SlideRetriever; missing -> None."""
+    masks = tmp_path / "masks"
+    masks.mkdir()
+    (masks / "slide_A.tiff").write_bytes(b"x")
+    (masks / "slide_B.tiff").write_bytes(b"x")
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    wsi_a, wsi_b = ws / "slide_A.mrxs", ws / "slide_B.mrxs"
+    clu = tmp_path / "clu"
+    clu.mkdir()
+    pd.DataFrame({"path": [str(wsi_a), str(wsi_b)]}).to_parquet(
+        clu / "slides.parquet", index=False
+    )
+    # all WSIs missing on this machine -> skipped, not fatal
+    assert make_masks.write_report_conf(masks, clu / "slides.parquet", tmp_path / "rc") is None
+
+    # WSIs that exist -> yaml written + patched
+    wsi_a.touch()
+    wsi_b.touch()
+    dest = make_masks.write_report_conf(masks, clu / "slides.parquet", tmp_path / "rc2")
+    y = dest.read_text()
+    assert "report.masks.SlideRetriever" in y
+    assert "paths:" in y and str(wsi_a) in y
+
+
+# ---- make_masks: per-slide, resumable, failure-isolated --------------------
 
 
 def _fake_wsi(tmp_path: Path, name: str, l0_w: int, l0_h: int) -> Path:
@@ -235,7 +292,8 @@ def _shard(path: Path, rows) -> None:
 
 def test_stream_slide_tiles_reads_only_its_parts(tmp_path: Path):
     """stream_slide_tiles: nearest-centroid cluster, only the target slide, only
-    the given parts."""
+    the given parts.
+    """
     K, D = 4, 4
     C = np.eye(K, dtype=np.float32)
     a, b = b"\x01" * 8, b"\x02" * 8  # two slides, bytes -> hex join key
@@ -245,7 +303,7 @@ def test_stream_slide_tiles_reads_only_its_parts(tmp_path: Path):
     shard1 = tmp_path / "p1.parquet"
     _shard(shard1, [(a, 32, 32, C[2])])  # A's 3rd tile lives in the 2nd part
 
-    tiles = make_mask_slide.stream_slide_tiles(
+    tiles = make_masks.stream_slide_tiles(
         [str(shard0), str(shard1)], a.hex(), C
     )
     # only A's tiles (3), never B's; clusters 0,1,2 (+1 offset) at the right coords
@@ -253,8 +311,9 @@ def test_stream_slide_tiles_reads_only_its_parts(tmp_path: Path):
 
 
 def test_process_writes_skips_and_isolates(tmp_path: Path):
-    """process(): writes a mask per slide; skips existing; a WSI that fails to
-    open is logged+skipped (not fatal); a slide with no parts is counted failed."""
+    """process_slides(): writes a mask per slide; skips existing; a WSI that fails
+    to open is logged+skipped (not fatal); a slide with no parts is failed.
+    """
     l0_w, l0_h, level, tex_w, tex_h = 1024, 512, 1, 64, 64
     K, D = 4, 4
     C = np.eye(K, dtype=np.float32)
@@ -285,19 +344,16 @@ def test_process_writes_skips_and_isolates(tmp_path: Path):
     slides_df.to_parquet(clu / "slides.parquet", index=False)
     np.save(clu / "centroids.npy", C)
 
-    # parts CSV: A -> [s0, s1], B -> [s0]; C has NO parts (tests the no-parts fail)
-    csv_path = tmp_path / "parts.csv"
-    csv_path.write_text(
-        "slide_id,part_name,part_path\n"
-        f"{sid_a.hex()},p0,{s0}\n"
-        f"{sid_a.hex()},p1,{s1}\n"
-        f"{sid_b.hex()},p0,{s0}\n"
-    )
-    parts_by_slide = make_mask_slide.load_parts_csv(csv_path)
+    # index: A -> [s0, s1], B -> [s0]; C has NO parts (tests the no-parts fail)
+    index_path = tmp_path / "slide_parts_index.json"
+    index_path.write_text(json.dumps(
+        {sid_a.hex(): [str(s0), str(s1)], sid_b.hex(): [str(s0)]}
+    ))
+    parts_by_slide = make_masks.load_index(index_path)
 
     targets = list(slides_df.itertuples(index=False))
-    ok, skip, fail = make_mask_slide.process(
-        slides_df, level, (tex_w, tex_h), C, parts_by_slide, masks, targets
+    ok, skip, fail, _rows = make_masks.process_slides(
+        targets, level, (tex_w, tex_h), C, parts_by_slide, masks
     )
     assert (ok, skip, fail) == (2, 0, 1)  # A+B written, C failed (no parts)
     assert (masks / "slide_A.tiff").exists()
@@ -311,15 +367,16 @@ def test_process_writes_skips_and_isolates(tmp_path: Path):
     a.close()
 
     # re-run: both already written -> all skipped, still 0 failed
-    ok, skip, fail = make_mask_slide.process(
-        slides_df, level, (tex_w, tex_h), C, parts_by_slide, masks, targets
+    ok, skip, fail, _rows = make_masks.process_slides(
+        targets, level, (tex_w, tex_h), C, parts_by_slide, masks
     )
     assert (ok, skip, fail) == (0, 2, 1)  # 2 skipped, C fails again
 
 
 def test_process_isolates_unopenable_wsi(tmp_path: Path):
     """A WSI that can't be opened (e.g. not mounted) is skipped, not fatal, and the
-    other slide still gets its mask."""
+    other slide still gets its mask.
+    """
     l0_w, l0_h, level, tex_w, tex_h = 1024, 512, 1, 64, 64
     C = np.eye(4, dtype=np.float32)
     sid_a, sid_b = b"\x01" * 8, b"\x02" * 8
@@ -340,9 +397,9 @@ def test_process_isolates_unopenable_wsi(tmp_path: Path):
     ])
     parts_by_slide = {sid_a.hex(): [str(s0)], sid_b.hex(): [str(s0)]}
 
-    ok, skip, fail = make_mask_slide.process(
-        slides_df, level, (tex_w, tex_h), C, parts_by_slide, masks,
-        list(slides_df.itertuples(index=False)),
+    ok, skip, fail, _rows = make_masks.process_slides(
+        list(slides_df.itertuples(index=False)), level, (tex_w, tex_h), C,
+        parts_by_slide, masks,
     )
     # A fails to open (missing file) -> counted failed; B still written
     assert (ok, fail) == (1, 1)

@@ -2,23 +2,22 @@ defaults:
   - base
   - _self_
 
-# Output of `run_clustering` (slides.parquet, assignments.parquet, centroids.npy).
+# Output of `run_clustering` (slides.parquet, centroids.npy).
 clustering_out: ${project_path}/clustering/k32
-
-# sampled -- paint only the tiles already assigned by cluster_tiles (fast, no re-embedding).
-# full    -- re-assign every tile to the nearest centroid (needs +data=<dataset>).
-mode: sampled
 
 # First N slides to mask (0 = all). Keep small for smoke tests.
 slides: 0
+
+# Max tile parts to scan/index/read (0 = all). Limited runs are not cached.
+parts: 0
 
 out: ???
 
 mlflow_artifact_path: masks
 
 metadata:
-  run_name: Masks ${mode}
-  description: Per-slide cluster masks (BigTIFF, xOpat overlay) from clustering outputs
+  run_name: Masks
+  description: Per-slide cluster masks (BigTIFF, xOpat overlay) + report config, from clustering outputs
   hyperparams:
-    mode: ${mode}
     slides: ${slides}
+    parts: ${parts}

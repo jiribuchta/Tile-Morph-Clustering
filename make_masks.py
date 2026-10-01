@@ -1,41 +1,47 @@
-r"""Build per-slide cluster masks (BigTIFF, xOpat-ready) from clustering outputs.
+r"""Build per-slide cluster masks (BigTIFF, xOpat-ready) + the xOpat report config.
 
-Writes one .tiff per slide: uint8 label image at the WSI's level-0 size,
-pixel value = cluster id + 1 (the "+1 offset"), 0 = background / no tile.
-Every cluster is thus a distinct non-zero value and visible in the report. Saved with ratiopath's write_big_tiff
-(512x512 tiles, DEFLATE, pyramid) so it overlays the WSI 1:1 in xOpat.
+ONE program controls all of: index -> masks -> report config.
 
-Modes:
-  sampled -- paint only the tiles already assigned by cluster_tiles (assignments.parquet).
-  full    -- stream the tile parquets, L2-normalize every embedding and assign
-             the nearest centroid (same KMeans run -> centroids.npy).
+  * index    -- map slide_id -> the tile-parquet parts that hold it. Cheap: reads
+               ONLY the ``slide_id`` column (not embeddings) and is CACHED at
+               ``out/slide_parts_index.json`` so re-runs resume without re-scanning
+               the whole part set. (slide_parts_index.py, folded in)
+  * masks    -- one .tiff per slide: uint8 label at WSI level-0 size, pixel value =
+               cluster id + 1 (the "+1 offset"), 0 = background. Each tile is
+               assigned to its nearest centroid (same KMeans run -> centroids.npy).
+               Resumable (a slide whose .tiff exists is skipped) and failure-
+               isolated (a WSI that can't be opened is logged + skipped, not fatal).
+  * report   -- write a ready-to-run ``reporter/tile_morph_k32.yaml`` from the masks
+               that exist on disk + the WSI map. (make_report_conf.py, folded in)
+
+Saved with ratiopath's write_big_tiff (512x512 tiles, DEFLATE, pyramid) at level-0
+MPP, so each mask overlays its WSI 1:1 in xOpat.
 
 Tile (x, y) are level-1 top-left coords (tile_extent x/y, level from
-slides.parquet). Coordinates are mapped to level 0 with the slide's own
-level_downsamples, so the mask always matches the WSI geometry.
+slides.parquet); mapped to level 0 with the slide's own level_downsamples.
 
-After each save the mask is re-opened and every painted tile's center pixel is
-asserted to equal its cluster (alignment self-check, fails the job on miss).
-
-Run (from repo root, on the cluster where the WSIs are mounted):
-    uv run -m make_masks +data=mmci_b20_24 +experiment/masks=mammaprint
+Run (from repo root, on the cluster where WSIs + tile parquets are mounted):
+    uv run -m make_masks +data=mmci_b20_24_train +experiment/masks=mammaprint
+    # limit: slides=5 parts=100   (slides=0 / parts=0 = all)
 """
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 import hydra
 import numpy as np
+import openslide
 import pandas as pd
 import pyarrow.parquet as pq
 import pyvips
-import openslide
+import yaml
 from omegaconf import DictConfig
-from ratiopath.masks import write_big_tiff
 from rationai.mlkit import autolog
 from rationai.mlkit.lightning.loggers import MLFlowLogger
+from ratiopath.masks import write_big_tiff
 from tqdm import tqdm
 
 
@@ -96,7 +102,8 @@ def build_slide_mask(
 
 def verify_mask(path: Path, tiles: list[tuple[int, int, int]], level: int) -> None:
     """Re-open the written mask; each tile's top-left corner pixel (its exclusive
-    pixel under row-major painting) must equal its cluster."""
+    pixel under row-major painting) must equal its cluster.
+    """
     s = openslide.OpenSlide(str(path))
     try:
         l0 = s.level_dimensions[0]
@@ -117,40 +124,186 @@ def verify_mask(path: Path, tiles: list[tuple[int, int, int]], level: int) -> No
         s.close()
 
 
-def stream_tiles(parts, slide_hexes: set[str], centroids: np.ndarray) -> dict[str, list[tuple[int, int, int]]]:
-    """Single pass over tile parquets; paint nearest-centroid cluster for the wanted slides."""
-    acc: dict[str, list[tuple[int, int, int]]] = {h: [] for h in slide_hexes}
-    C = centroids
-    for _name, local, _size in tqdm(parts):
+# ---- parts index: slide_id -> parts (cheap: slide_id column only, cached) ----
+
+def _embeddings_col(col, n_rows: int) -> np.ndarray:
+    """Embedding column -> (n_rows, dim) float32 matrix (uniform fast path)."""
+    emb = col.values.to_numpy(zero_copy_only=False)
+    if emb.size % n_rows == 0:
+        emb = emb.reshape(n_rows, -1)
+    else:
+        rows = col.to_numpy(zero_copy_only=False)
+        emb = np.stack([np.asarray(r, dtype=np.float32) for r in rows])
+    return emb.astype(np.float32)
+
+
+def _slide_ids(batch) -> np.ndarray:
+    return batch.column("slide_id").to_numpy(zero_copy_only=False)
+
+
+def build_index(parts) -> dict[str, list[str]]:
+    """One cheap pass over the parts (``slide_id`` column ONLY) -> slide -> parts.
+
+    Records every slide seen so the cache is reusable as the limit grows. Parts
+    are interleaved (every slide is in nearly every part), so all parts are
+    scanned; the cache is what makes a re-run free.
+    """
+    index: dict[str, list[str]] = {}
+    for _name, local, _size in tqdm(parts, desc="index", unit=" part"):
+        pf = pq.ParquetFile(local)
+        part_slides: set[str] = set()
+        for batch in pf.iter_batches(columns=["slide_id"], batch_size=100_000):
+            for v in _slide_ids(batch):
+                part_slides.add(hex_id(v))
+        for s in part_slides:
+            index.setdefault(s, []).append(local)
+    return index
+
+
+def load_index(path: Path) -> dict[str, list[str]] | None:
+    if path.is_file():
+        return json.loads(path.read_text())
+    return None
+
+
+def save_index(path: Path, index: dict[str, list[str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(index))
+
+
+# ---- masks: one .tiff per wanted slide (resumable, failure-isolated) ----
+
+def _assign_batch(batch, target_hex: str, centroids: np.ndarray):
+    """(x, y, cluster+1) for the target slide in this batch; nearest-centroid."""
+    sids = _slide_ids(batch)
+    keep = [i for i, v in enumerate(sids) if hex_id(v) == target_hex]
+    if not keep:
+        return []
+    e = _embeddings_col(batch.column("embedding"), len(batch))[keep].astype(np.float32)
+    e /= np.linalg.norm(e, axis=1, keepdims=True)
+    clusters = np.argmax(centroids @ e.T, axis=0)
+    xs = batch.column("x").to_numpy(zero_copy_only=False)[keep]
+    ys = batch.column("y").to_numpy(zero_copy_only=False)[keep]
+    return [(int(xs[i]), int(ys[i]), int(clusters[i]) + 1) for i, c in enumerate(clusters)]
+
+
+def stream_slide_tiles(part_paths: list[str], target_hex: str, centroids: np.ndarray):
+    """(x, y, cluster+1) for the target slide, reading ONLY its parts."""
+    tiles: list[tuple[int, int, int]] = []
+    for local in part_paths:
         pf = pq.ParquetFile(local)
         for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=8192):
-            n = len(batch)
-            if n == 0:
+            if len(batch) == 0:
                 continue
-            sids = batch.column("slide_id").to_numpy(zero_copy_only=False)
-            keep = [i for i, v in enumerate(sids) if hex_id(v) in slide_hexes]
-            if not keep:
-                continue
-            emb = batch.column("embedding").values.to_numpy(zero_copy_only=False)
-            if emb.size % n == 0:
-                emb = emb.reshape(n, -1)
-            else:
-                rows = batch.column("embedding").to_numpy(zero_copy_only=False)
-                emb = np.stack([np.asarray(r, dtype=np.float32) for r in rows])
-            xs = batch.column("x").to_numpy(zero_copy_only=False)[keep]
-            ys = batch.column("y").to_numpy(zero_copy_only=False)[keep]
-            e = emb[keep].astype(np.float32)
-            norms = np.linalg.norm(e, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            e /= norms
-            clusters = np.argmax(C @ e.T, axis=0)
-            for i, k in enumerate(keep):
-                # +1 offset: cluster c -> label c+1, 0 = background
-                acc[hex_id(sids[k])].append(
-                    (int(xs[i]), int(ys[i]), int(clusters[i]) + 1)
-                )
-    return acc
+            tiles.extend(_assign_batch(batch, target_hex, centroids))
+    return tiles
 
+
+def process_slides(
+    wanted_rows,
+    level: int,
+    tile_extent: tuple[int, int],
+    centroids: np.ndarray,
+    index: dict[str, list[str]],
+    masks_dir: Path,
+) -> tuple[int, int, int, list]:
+    """Write one mask per wanted slide; return (written, skipped, failed, rows)."""
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    ok = skip = fail = 0
+    rows = []
+    for r in wanted_rows:
+        sid = hex_id(r.slide_id)
+        dest = masks_dir / f"{Path(str(r.path)).stem}.tiff"
+        if dest.exists():
+            skip += 1
+            print(f"  skip {dest.name}: already written")
+            continue
+        parts = index.get(sid)
+        if not parts:
+            fail += 1
+            print(f"  FAIL {Path(str(r.path)).name}: no parts in index")
+            continue
+        t0 = time.monotonic()
+        try:
+            tiles = stream_slide_tiles(parts, sid, centroids)
+            if not tiles:
+                fail += 1
+                print(f"  FAIL {Path(str(r.path)).name}: no tiles for {sid[:8]}")
+                continue
+            arr, mpp_x, mpp_y = build_slide_mask(
+                {"path": str(r.path)}, tiles, level, tile_extent
+            )
+            img = pyvips.Image.new_from_array(arr)
+            write_big_tiff(img, dest, mpp_x, mpp_y)
+            verify_mask(dest, tiles, level)
+        except Exception as e:
+            fail += 1
+            print(f"  FAIL {Path(str(r.path)).name}: {type(e).__name__}: {e}")
+            continue
+        ok += 1
+        rows.append({"slide_id": sid, "path": str(r.path),
+                     "file": f"{Path(str(r.path)).stem}.tiff"})
+        print(f"  [{ok}] {dest.name} {arr.shape[1]}x{arr.shape[0]} "
+              f"{len(tiles)} tiles ({time.monotonic() - t0:.0f}s)")
+    return ok, skip, fail, rows
+
+
+# ---- report config (make_report_conf, folded in) ----
+
+TEMPLATE = Path(__file__).parent / "report_conf" / "reporter" / "tile_morph_k32.yaml"
+
+
+def _indent_paths(paths: list[str]) -> str:
+    dumped = yaml.safe_dump(paths, default_flow_style=False, sort_keys=False)
+    lines = [ln for ln in dumped.splitlines() if ln.strip()]
+    return "\n".join("    " + ln if ln else ln for ln in lines)
+
+
+def wsi_paths_for(masks_dir: Path, slides_path: Path) -> list[str]:
+    """WSI paths for exactly the masks present on disk, in a stable order."""
+    mask_files = sorted(masks_dir.glob("*.tiff"))
+    if not mask_files:
+        raise SystemExit(f"no *.tiff masks found in {masks_dir}")
+    df = pd.read_parquet(slides_path, columns=["path"])
+    stem_to_wsi = {Path(str(p)).stem: str(p) for p in df["path"]}
+    seen: set[str] = set()
+    paths: list[str] = []
+    for p in mask_files:
+        w = stem_to_wsi.get(p.stem)
+        if w is not None and w not in seen:
+            seen.add(w)
+            paths.append(w)
+    return paths
+
+
+def write_report_conf(masks_dir: Path, slides_path: Path, out_dir: Path) -> Path | None:
+    """Build the xOpat report config from masks on disk + the WSI map.
+
+    Never fatal: if a WSI path isn't present on this machine we warn and skip
+    (masks are still valid to copy to the node that has them).
+    """
+    wsi_paths = wsi_paths_for(masks_dir, slides_path)
+    if not wsi_paths:
+        print("[report] skipped: no WSI path matches the masks (stem mismatch?)")
+        return None
+    missing = [p for p in wsi_paths if not Path(p).exists()]
+    if missing:
+        print(f"[report] skipped: {len(missing)}/{len(wsi_paths)} WSI paths missing on this "
+              f"machine (e.g. {missing[0]}) — masks are still valid on the right mount")
+        return None
+    tpl = TEMPLATE.read_text()
+    tpl = tpl.replace("_target_: report.masks.BasicImageRetriever",
+                      "_target_: report.masks.SlideRetriever")
+    tpl = re.sub(r"source_dir:.*\n\s*globs:.*\n", f"paths:\n{_indent_paths(wsi_paths)}\n", tpl, count=1)
+    tpl = re.sub(r"dir_name:.*\n", f"dir_name: {masks_dir.resolve()}\n", tpl, count=1)
+    dest = out_dir / "reporter" / "tile_morph_k32.yaml"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(tpl)
+    print(f"wrote report config: {dest}  ({len(wsi_paths)} WSIs)")
+    return dest
+
+
+# ---- main ----
 
 def main_run(config: DictConfig) -> None:
     sys.stdout.reconfigure(line_buffering=True)
@@ -161,69 +314,62 @@ def main_run(config: DictConfig) -> None:
     clu = Path(config.clustering_out)
     slides = pd.read_parquet(clu / "slides.parquet")
     slides["slide_id"] = slides["slide_id"].apply(hex_id)
-    assignments = pd.read_parquet(clu / "assignments.parquet")
-    assignments["slide_id"] = assignments["slide_id"].apply(hex_id)
-    centroids = np.load(clu / "centroids.npy").astype(np.float32)
+    C = np.load(clu / "centroids.npy").astype(np.float32)
+    if C.shape[0] >= 255:
+        raise SystemExit(f"centroids={C.shape[0]} won't fit the uint8 +1 offset (max 255)")
 
     if int(config.slides) > 0:
         slides = slides.head(int(config.slides))
     wanted = set(slides["slide_id"])
-    print(f"{len(slides)} slides, mode={config.mode}, out={out}")
-
-    # resolve tile parquet parts (only needed for full mode)
-    parts = []
-    if config.mode == "full":
-        from cluster_tiles import resolve_sources
-
-        parts, _ = resolve_sources(config.data)
-        print(f"  {len(parts)} tile parts, ~{sum(p[2] for p in parts) / 1e9:.1f} GB")
-
     level = int(slides["level"].iloc[0])
     tex = (int(slides["tile_extent_x"].iloc[0]), int(slides["tile_extent_y"].iloc[0]))
+    print(f"{len(slides)} slides, k={C.shape[0]}, out={out}, t0={time.monotonic() - t0:.0f}s")
 
-    tiles_by_slide: dict[str, list[tuple[int, int, int]]]
-    if config.mode == "sampled":
-        sub = assignments[assignments["slide_id"].isin(wanted)]
-        # +1 offset: cluster c -> label c+1, 0 = background
-        tiles_by_slide = {
-            h: list(zip(g["x"], g["y"], g["cluster"].astype(int) + 1))
-            for h, g in sub.groupby("slide_id", sort=False)
-        }
+    # ---- index (cached): slide_id -> parts, from the tile parquets' slide_id column
+    from cluster_tiles import resolve_sources
+
+    parts, _ = resolve_sources(config.data)
+    limited_parts = int(getattr(config, "parts", 0) or 0) > 0
+    if limited_parts:
+        parts = parts[: int(config.parts)]
+    print(f"  {len(parts)} tile parts, ~{sum(p[2] for p in parts) / 1e9:.1f} GB total")
+
+    index_path = out / "slide_parts_index.json"
+    index = load_index(index_path) if not limited_parts else None
+    if limited_parts:
+        # a limited index would be incomplete -> build in-memory, never cache it
+        print("  index: scanning slide_id (parts limited -> not cached)...")
+        ti = time.monotonic()
+        index = build_index(parts)
+        print(f"  index: {len(index)} slides, {time.monotonic() - ti:.0f}s (not cached)")
+    elif index is not None:
+        print(f"  index: loaded {len(index)} slides from {index_path}")
     else:
-        t1 = time.monotonic()
-        tiles_by_slide = stream_tiles(parts, wanted, centroids)
-        print(f"  streamed embeddings for {len(wanted)} slides ({time.monotonic() - t1:.0f}s)")
+        print("  index: scanning slide_id (cheap, cached after this run)...")
+        ti = time.monotonic()
+        index = build_index(parts)
+        save_index(index_path, index)
+        print(f"  index: {len(index)} slides -> {index_path} ({time.monotonic() - ti:.0f}s)")
+    no_parts = [s for s in wanted if s not in index]
+    if no_parts:
+        print(f"  WARN {len(no_parts)} wanted slide(s) not in index (no tiles), e.g. {no_parts[:3]}")
 
-    done = 0
-    for _, row in slides.iterrows():
-        h = row["slide_id"]
-        tiles = tiles_by_slide.get(h, [])
-        if not tiles:
-            print(f"  skip {row['path'].rsplit('/', 1)[-1]}: no tiles")
-            continue
-        arr, mpp_x, mpp_y = build_slide_mask(
-            row.to_dict(), tiles, level, tex
-        )
-        dest = out / f"{Path(row['path']).stem}.tiff"
-        img = pyvips.Image.new_from_array(arr)
-        write_big_tiff(img, dest, mpp_x, mpp_y)
-        verify_mask(dest, tiles, level)
-        done += 1
-        print(
-            f"  [{done}/{len(slides)}] {dest.name} {arr.shape[1]}x{arr.shape[0]} "
-            f"{len(tiles)} tiles ({time.monotonic() - t0:.0f}s)"
-        )
+    # ---- masks: one .tiff per wanted slide (resumable, failure-isolated)
+    ok, skip, fail, rows = process_slides(
+        list(slides.itertuples(index=False)), level, tex, C, index, out
+    )
 
     (out / "manifest.json").write_text(json.dumps({
-        "mode": config.mode,
-        "k": int(centroids.shape[0]),
+        "k": int(C.shape[0]),
         "clustering_out": str(clu),
-        "slides": [
-            {"slide_id": r["slide_id"], "path": r["path"], "file": f"{Path(r['path']).stem}.tiff"}
-            for _, r in slides.iterrows()
-        ],
+        "slides": rows,
     }, indent=2))
-    print(f"wrote {done} masks to {out} ({time.monotonic() - t0:.0f}s total)")
+
+    # ---- report config (never fatal)
+    write_report_conf(out, clu / "slides.parquet", out / "report_conf")
+
+    print(f"wrote {ok} new, {skip} skipped, {fail} failed -> {out} "
+          f"({time.monotonic() - t0:.0f}s total)")
 
 
 @hydra.main(config_path="configs", config_name="masks", version_base=None)

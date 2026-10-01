@@ -7,8 +7,8 @@ crops them from the WSIs into one 4x4 PNG per cluster. The pathologist reads
 the 32 images to decide which clusters are coherent morphologies and which
 are mixes.
 
-Phase 1 streams the tile parquets once (the same parts slide_parts.csv points
-at — no re-clustering, just similarity to centroids). Phase 2 crops the chosen
+Phase 1 streams the tile parquets once (the same parts the index points at — no
+re-clustering, just similarity to centroids). Phase 2 crops the chosen
 tiles from the WSIs at their recorded level/coords (each WSI opened once).
 
 Labels use the +1 offset scheme (cluster c is stored as value c+1 in the
@@ -18,7 +18,7 @@ Usage:
     python make_montage.py \
         --slides    <clustering>/slides.parquet \
         --centroids <clustering>/centroids.npy \
-        --parts-csv slide_parts.csv \
+        --index <masks_out>/slide_parts_index.json \
         --out /path/to/montage_dir
 """
 from __future__ import annotations
@@ -31,12 +31,11 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pyvips
 
-from make_mask_slide import load_parts_csv
-from make_masks import hex_id
+from make_masks import hex_id, load_index
 
 
 def _normalized_embeddings(col, n_rows: int) -> np.ndarray:
-    """embedding column -> (n_rows, dim) L2-normalized float32 matrix."""
+    """Embedding column -> (n_rows, dim) L2-normalized float32 matrix."""
     emb = col.values.to_numpy(zero_copy_only=False)
     if emb.size % n_rows == 0:
         emb = emb.reshape(n_rows, -1)
@@ -51,7 +50,7 @@ def _normalized_embeddings(col, n_rows: int) -> np.ndarray:
 def select_best(
     part_paths: list[str], centroids: np.ndarray, n: int
 ) -> dict[int, list[tuple[float, str, int, int]]]:
-    """c -> up to n (sim, slide_hex, x, y): the tiles nearest centroid c.
+    """C -> up to n (sim, slide_hex, x, y): the tiles nearest centroid c.
 
     Per 8192-row batch each cluster only ever considers its top-64 members,
     then keeps the global top-n — Python work is K*64 per batch, not
@@ -96,7 +95,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--slides", type=Path, required=True)
     ap.add_argument("--centroids", type=Path, required=True)
-    ap.add_argument("--parts-csv", type=Path, required=True)
+    ap.add_argument("--index", type=Path, required=True,
+                    help="slide_parts_index.json (make_masks output)")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--n", type=int, default=16, help="tiles per cluster (4x4 grid)")
     ap.add_argument("--size", type=int, default=256,
@@ -108,7 +108,7 @@ def main() -> None:
     tw = int(slides["tile_extent_x"].iloc[0])
     th = int(slides["tile_extent_y"].iloc[0])
     centroids = np.load(args.centroids).astype(np.float32)
-    parts_by_slide = load_parts_csv(args.parts_csv)
+    parts_by_slide = load_index(args.index)
 
     all_parts = sorted({p for ps in parts_by_slide.values() for p in ps})
     slide_path = {hex_id(r.slide_id): str(r.path)
@@ -141,7 +141,7 @@ def main() -> None:
                 cell = s.crop(x, y, tw, th)
                 cells[(c, x, y)] = cell.resize(args.size / tw)
             s.close()
-        except Exception as e:  # noqa: BLE001 - one bad WSI can't kill the run
+        except Exception as e:
             print(f"  WARN {Path(path).name}: {type(e).__name__}: {e}")
 
     # compose one 4x4 PNG per cluster
