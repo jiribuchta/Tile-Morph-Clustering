@@ -147,7 +147,8 @@ def test_stream_tiles_assigns_nearest_centroid(tmp_path: Path):
     got = make_masks.stream_tiles([("tiles", str(pf), 0)], {b"sA".hex()}, C)
     tiles = got[b"sA".hex()]
     assert len(tiles) == N  # every tile assigned (no index-32 overflow)
-    assert all(c == e for (_, _, c), e in zip(tiles, expected))
+    # labels use the +1 offset: cluster c -> label c+1
+    assert all(c == e + 1 for (_, _, c), e in zip(tiles, expected))
 
 
 def test_main_run_sampled_end_to_end(tmp_path: Path):
@@ -199,14 +200,14 @@ def test_main_run_sampled_end_to_end(tmp_path: Path):
     mani = json.loads((out / "manifest.json").read_text())
     assert {s["slide_id"] for s in mani["slides"]} == {"A", "B"}
     assert mani["k"] == 8
-    # painted tiles carry their cluster ids; slides are independent
+    # painted tiles carry cluster id + 1 (the +1 offset); slides are independent
     a = stub.OpenSlideSlide(str(out / "slide_A.tiff"))
     assert a.level_dimensions[0] == (l0_w, l0_h)
-    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 4   # A tile (0,0)
-    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 9  # A tile (32,32)
+    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 5   # A tile (0,0), cluster 4
+    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 10  # A tile (32,32), cluster 9
     a.close()
     b = stub.OpenSlideSlide(str(out / "slide_B.tiff"))
-    assert int(b._l0.crop(1, 1, 1, 1).numpy().item()) == 6   # B tile (0,0)
+    assert int(b._l0.crop(1, 1, 1, 1).numpy().item()) == 7   # B tile (0,0), cluster 6
     b.close()
 
 
@@ -247,8 +248,8 @@ def test_stream_slide_tiles_reads_only_its_parts(tmp_path: Path):
     tiles = make_mask_slide.stream_slide_tiles(
         [str(shard0), str(shard1)], a.hex(), C
     )
-    # only A's tiles (3), never B's; clusters 0,1,2 at the right coords
-    assert sorted(tiles) == [(0, 0, 0), (32, 32, 2), (64, 0, 1)]
+    # only A's tiles (3), never B's; clusters 0,1,2 (+1 offset) at the right coords
+    assert sorted(tiles) == [(0, 0, 1), (32, 32, 3), (64, 0, 2)]
 
 
 def test_process_writes_skips_and_isolates(tmp_path: Path):
@@ -302,11 +303,11 @@ def test_process_writes_skips_and_isolates(tmp_path: Path):
     assert (masks / "slide_A.tiff").exists()
     assert (masks / "slide_B.tiff").exists()
 
-    # A's painted tiles carry their clusters (A tile (0,0)->0, (32,32)->2)
+    # A's painted tiles carry cluster + 1 (A tile (0,0)->cluster 0->1, (32,32)->2->3)
     a = stub.OpenSlideSlide(str(masks / "slide_A.tiff"))
     assert a.level_dimensions[0] == (l0_w, l0_h)
-    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 0
-    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 2
+    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 1
+    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 3
     a.close()
 
     # re-run: both already written -> all skipped, still 0 failed

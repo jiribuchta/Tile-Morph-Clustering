@@ -1,7 +1,8 @@
 r"""Build per-slide cluster masks (BigTIFF, xOpat-ready) from clustering outputs.
 
-Writes one .tiff per slide: uint8 label image at the WSI's level-0 size, pixel
-value = cluster id, 0 = background. Saved with ratiopath's write_big_tiff
+Writes one .tiff per slide: uint8 label image at the WSI's level-0 size,
+pixel value = cluster id + 1 (the "+1 offset"), 0 = background / no tile.
+Every cluster is thus a distinct non-zero value and visible in the report. Saved with ratiopath's write_big_tiff
 (512x512 tiles, DEFLATE, pyramid) so it overlays the WSI 1:1 in xOpat.
 
 Modes:
@@ -144,8 +145,9 @@ def stream_tiles(parts, slide_hexes: set[str], centroids: np.ndarray) -> dict[st
             e /= norms
             clusters = np.argmax(C @ e.T, axis=0)
             for i, k in enumerate(keep):
+                # +1 offset: cluster c -> label c+1, 0 = background
                 acc[hex_id(sids[k])].append(
-                    (int(xs[i]), int(ys[i]), int(clusters[i]))
+                    (int(xs[i]), int(ys[i]), int(clusters[i]) + 1)
                 )
     return acc
 
@@ -182,8 +184,9 @@ def main_run(config: DictConfig) -> None:
     tiles_by_slide: dict[str, list[tuple[int, int, int]]]
     if config.mode == "sampled":
         sub = assignments[assignments["slide_id"].isin(wanted)]
+        # +1 offset: cluster c -> label c+1, 0 = background
         tiles_by_slide = {
-            h: list(zip(g["x"], g["y"], g["cluster"].astype(int)))
+            h: list(zip(g["x"], g["y"], g["cluster"].astype(int) + 1))
             for h, g in sub.groupby("slide_id", sort=False)
         }
     else:

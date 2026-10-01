@@ -6,7 +6,8 @@ parquets are mounted.
 ## 1) Build the masks (this repo)
 
 One `.tiff` per slide: uint8 label image at the WSI **level-0 size**, pixel
-value = cluster id, `0` = background. Saved with `ratiopath.masks.write_big_tiff`
+value = cluster id + 1 (the "+1 offset"), `0` = background. Saved with
+`ratiopath.masks.write_big_tiff`
 (512px tiles, DEFLATE, pyramid) so each mask overlays its WSI 1:1 in xOpat.
 
 Smoke test (paint only the tiles `run_clustering` already assigned — fast, no

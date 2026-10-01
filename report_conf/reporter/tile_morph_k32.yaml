@@ -8,7 +8,8 @@
 # (add  mlflow=kubas_external  if you run outside the Kubas cluster)
 #
 # The mask files are produced by this repo's `make_masks` (one .tiff per slide,
-# uint8 label image at WSI level-0 size, pixel value = cluster id, 0 = background).
+# uint8 label image at WSI level-0 size, pixel value = cluster id + 1
+# (the +1 offset), 0 = background).
 # The mask file name (slide stem) is the join key to the WSI below.
 #
 # Adjust the two paths to match where `make_masks` wrote the masks and where
@@ -38,13 +39,15 @@ background:
 # assumes class values are uniform over [0,255] and would mis-colour a 0..31
 # label image). A raw shader passes `infer_shader_configuration` through
 # untouched, so the boundaries we set are exactly what xOpat uses.
-#   cluster id c is stored as uint8 value c; xOpat normalises a pixel to c/255,
-#   so the class boundaries sit at c/255 (threshold.breaks). Bin 0 (value 0)
-#   is cluster 0 = background, hidden by threshold.mask[0]=0.
+#   cluster id c is stored as uint8 value c+1 (the +1 offset); xOpat
+#   normalises a pixel to value/255, so the class boundaries sit at c/255
+#   (threshold.breaks). Bin 0 (value 0) is background, hidden by
+#   threshold.mask[0]=0.
 #
-# Colors: 32 slots, index i = cluster i. Slot 0 = transparent (background).
-# Clusters 1..31 use an even hue-wheel palette with alternating light/saturate
-# so *neighbouring* clusters (the ones that touch on the WSI) are maximally distinct.
+# Colors: 33 slots, index i = value i (slot 0 = transparent background,
+#   slot i = cluster i-1). Values 1..32 use an even hue-wheel palette with
+#   alternating light/saturate so *neighbouring* clusters (the ones that
+#   touch on the WSI) are maximally distinct.
 mask_retrievers:
   - _target_: report.masks.DriveMasksRetriever
     dir_name: /mnt/bioptic_tree
@@ -60,46 +63,48 @@ mask_retrievers:
           default: true
         color:
           type: custom_colormap
+          # +1 offset scheme: value i (i=1..32) = cluster i-1; value 0 = background
           default:
-          - ''            # cluster 0 = background -> transparent (masked by threshold.mask[0]=0)
-          - "#A64630"      # cluster 1
-          - "#F4A87B"      # cluster 2
-          - "#A67230"      # cluster 3
-          - "#F4D67B"      # cluster 4
-          - "#A69F30"      # cluster 5
-          - "#E5F47B"      # cluster 6
-          - "#81A630"      # cluster 7
-          - "#B8F47B"      # cluster 8
-          - "#55A630"      # cluster 9
-          - "#8AF47B"      # cluster 10
-          - "#30A638"      # cluster 11
-          - "#7BF499"      # cluster 12
-          - "#30A664"      # cluster 13
-          - "#7BF4C7"      # cluster 14
-          - "#30A690"      # cluster 15
-          - "#7BF4F4"      # cluster 16
-          - "#3090A6"      # cluster 17
-          - "#7BC7F4"      # cluster 18
-          - "#3064A6"      # cluster 19
-          - "#7B99F4"      # cluster 20
-          - "#3038A6"      # cluster 21
-          - "#8A7BF4"      # cluster 22
-          - "#5530A6"      # cluster 23
-          - "#B87BF4"      # cluster 24
-          - "#8130A6"      # cluster 25
-          - "#E57BF4"      # cluster 26
-          - "#A6309F"      # cluster 27
-          - "#F47BD6"      # cluster 28
-          - "#A63072"      # cluster 29
-          - "#F47BA8"      # cluster 30
-          - "#A63046"      # cluster 31
-          steps: 32
+          - ''            # value 0 = background -> transparent (masked by threshold.mask[0]=0)
+          - "#A64630"      # value 1 = cluster 0
+          - "#F4A87B"      # value 2 = cluster 1
+          - "#A67230"      # value 3 = cluster 2
+          - "#F4D67B"      # value 4 = cluster 3
+          - "#A69F30"      # value 5 = cluster 4
+          - "#E5F47B"      # value 6 = cluster 5
+          - "#81A630"      # value 7 = cluster 6
+          - "#B8F47B"      # value 8 = cluster 7
+          - "#55A630"      # value 9 = cluster 8
+          - "#8AF47B"      # value 10 = cluster 9
+          - "#30A638"      # value 11 = cluster 10
+          - "#7BF499"      # value 12 = cluster 11
+          - "#30A664"      # value 13 = cluster 12
+          - "#7BF4C7"      # value 14 = cluster 13
+          - "#30A690"      # value 15 = cluster 14
+          - "#7BF4F4"      # value 16 = cluster 15
+          - "#3090A6"      # value 17 = cluster 16
+          - "#7BC7F4"      # value 18 = cluster 17
+          - "#3064A6"      # value 19 = cluster 18
+          - "#7B99F4"      # value 20 = cluster 19
+          - "#3038A6"      # value 21 = cluster 20
+          - "#8A7BF4"      # value 22 = cluster 21
+          - "#5530A6"      # value 23 = cluster 22
+          - "#B87BF4"      # value 24 = cluster 23
+          - "#8130A6"      # value 25 = cluster 24
+          - "#E57BF4"      # value 26 = cluster 25
+          - "#A6309F"      # value 27 = cluster 26
+          - "#F47BD6"      # value 28 = cluster 27
+          - "#A63072"      # value 29 = cluster 28
+          - "#F47BA8"      # value 30 = cluster 29
+          - "#A63046"      # value 31 = cluster 30
+          - "#4630A6"      # value 32 = cluster 31 (new: deep blue-purple, distinct from cluster 30's red)
+          steps: 33
           mode: qualitative
           interactive: true
           title: 'Colormap:'
           continuous: false
         threshold:
-          # boundary before class c (c=1..31): value c/255
+          # boundary before class c (c=1..32): value c/255
           breaks:
           - 0.003922
           - 0.007843
@@ -132,9 +137,11 @@ mask_retrievers:
           - 0.113725
           - 0.117647
           - 0.121569
-          # cluster 0 = background -> transparent; 1..31 shown
+          - 0.125490
+          # value 0 = background -> transparent; 1..32 shown
           mask:
           - 0
+          - 1
           - 1
           - 1
           - 1
@@ -177,7 +184,7 @@ mask_retrievers:
           step: null
           pips:
             mode: count
-            values: 32
+            values: 33
             density: 4
             stepped: true
 

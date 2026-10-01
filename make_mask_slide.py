@@ -7,6 +7,9 @@ given slide it:
   * assigns each tile its nearest-centroid cluster,
   * opens the WSI and writes ``<stem>.tiff`` into the masks dir.
 
+Labels use the +1 offset scheme: cluster c is painted as value c+1 (0 =
+background / no tile), so EVERY cluster is visible in the report.
+
 Resumable: a slide whose ``.tiff`` already exists is skipped. Failure-isolated:
 a WSI that fails to open (e.g. not mounted) is logged and skipped, NOT fatal — so
 one bad slide can't kill the run and the others still get their masks.
@@ -76,7 +79,8 @@ def stream_slide_tiles(
             e /= norms
             clusters = np.argmax(C @ e.T, axis=0)
             for i, k in enumerate(keep):
-                tiles.append((int(xs[i]), int(ys[i]), int(clusters[i])))
+                # +1 offset: cluster c -> label c+1, 0 = background
+                tiles.append((int(xs[i]), int(ys[i]), int(clusters[i]) + 1))
     return tiles
 
 
