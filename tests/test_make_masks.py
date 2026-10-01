@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pyvips
 import pytest
 from omegaconf import OmegaConf
@@ -20,6 +22,7 @@ from omegaconf import OmegaConf
 stub = types.ModuleType("openslide")
 sys.modules.setdefault("openslide", stub)
 import make_masks  # noqa: E402
+import make_mask_slide  # noqa: E402
 
 
 class _Region:
@@ -54,6 +57,7 @@ class StubSlide:
 
 
 stub.OpenSlideSlide = StubSlide
+stub.OpenSlide = StubSlide  # build_slide_mask/verify_mask call openslide.OpenSlide
 make_masks.openslide = stub  # in case module import order differs
 
 
@@ -204,3 +208,141 @@ def test_main_run_sampled_end_to_end(tmp_path: Path):
     b = stub.OpenSlideSlide(str(out / "slide_B.tiff"))
     assert int(b._l0.crop(1, 1, 1, 1).numpy().item()) == 6   # B tile (0,0)
     b.close()
+
+
+# ---- make_mask_slide: per-slide, resumable, failure-isolated ---------------
+
+
+def _fake_wsi(tmp_path: Path, name: str, l0_w: int, l0_h: int) -> Path:
+    f = tmp_path / name
+    pyvips.Image.tiffsave(
+        pyvips.Image.new_from_array(np.zeros((l0_h, l0_w), np.uint8)),
+        f, bigtiff=True, tile=True, tile_width=256, tile_height=256,
+        pyramid=True, compression=pyvips.enums.ForeignTiffCompression.DEFLATE,
+    )
+    return f
+
+
+def _shard(path: Path, rows) -> None:
+    pq.write_table(pa.table({
+        "slide_id": [r[0] for r in rows],
+        "x": [r[1] for r in rows],
+        "y": [r[2] for r in rows],
+        "embedding": [list(r[3]) for r in rows],
+    }), path)
+
+
+def test_stream_slide_tiles_reads_only_its_parts(tmp_path: Path):
+    """stream_slide_tiles: nearest-centroid cluster, only the target slide, only
+    the given parts."""
+    K, D = 4, 4
+    C = np.eye(K, dtype=np.float32)
+    a, b = b"\x01" * 8, b"\x02" * 8  # two slides, bytes -> hex join key
+    # A: 3 tiles -> centroids 0,1,2 ; B: 1 tile -> centroid 3
+    shard0 = tmp_path / "p0.parquet"
+    _shard(shard0, [(a, 0, 0, C[0]), (a, 64, 0, C[1]), (b, 0, 0, C[3])])
+    shard1 = tmp_path / "p1.parquet"
+    _shard(shard1, [(a, 32, 32, C[2])])  # A's 3rd tile lives in the 2nd part
+
+    tiles = make_mask_slide.stream_slide_tiles(
+        [str(shard0), str(shard1)], a.hex(), C
+    )
+    # only A's tiles (3), never B's; clusters 0,1,2 at the right coords
+    assert sorted(tiles) == [(0, 0, 0), (32, 32, 2), (64, 0, 1)]
+
+
+def test_process_writes_skips_and_isolates(tmp_path: Path):
+    """process(): writes a mask per slide; skips existing; a WSI that fails to
+    open is logged+skipped (not fatal); a slide with no parts is counted failed."""
+    l0_w, l0_h, level, tex_w, tex_h = 1024, 512, 1, 64, 64
+    K, D = 4, 4
+    C = np.eye(K, dtype=np.float32)
+    sid_a, sid_b, sid_c = b"\x01" * 8, b"\x02" * 8, b"\x03" * 8
+
+    wsi_a = _fake_wsi(tmp_path, "slide_A.mrxs", l0_w, l0_h)
+    wsi_b = _fake_wsi(tmp_path, "slide_B.mrxs", l0_w, l0_h)
+    # slide_C points at a WSI that does NOT exist (simulates not-mounted)
+
+    masks = tmp_path / "masks"
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    s0 = shards / "p0.parquet"
+    _shard(s0, [(sid_a, 0, 0, C[0]), (sid_b, 0, 0, C[1])])
+    s1 = shards / "p1.parquet"
+    _shard(s1, [(sid_a, 32, 32, C[2])])
+
+    clu = tmp_path / "clu"
+    clu.mkdir()
+    slides_df = pd.DataFrame([
+        {"slide_id": sid_a, "path": str(wsi_a), "level": level,
+         "tile_extent_x": tex_w, "tile_extent_y": tex_h},
+        {"slide_id": sid_b, "path": str(wsi_b), "level": level,
+         "tile_extent_x": tex_w, "tile_extent_y": tex_h},
+        {"slide_id": sid_c, "path": str(tmp_path / "missing.mrxs"), "level": level,
+         "tile_extent_x": tex_w, "tile_extent_y": tex_h},
+    ])
+    slides_df.to_parquet(clu / "slides.parquet", index=False)
+    np.save(clu / "centroids.npy", C)
+
+    # parts CSV: A -> [s0, s1], B -> [s0]; C has NO parts (tests the no-parts fail)
+    csv_path = tmp_path / "parts.csv"
+    csv_path.write_text(
+        "slide_id,part_name,part_path\n"
+        f"{sid_a.hex()},p0,{s0}\n"
+        f"{sid_a.hex()},p1,{s1}\n"
+        f"{sid_b.hex()},p0,{s0}\n"
+    )
+    parts_by_slide = make_mask_slide.load_parts_csv(csv_path)
+
+    targets = list(slides_df.itertuples(index=False))
+    ok, skip, fail = make_mask_slide.process(
+        slides_df, level, (tex_w, tex_h), C, parts_by_slide, masks, targets
+    )
+    assert (ok, skip, fail) == (2, 0, 1)  # A+B written, C failed (no parts)
+    assert (masks / "slide_A.tiff").exists()
+    assert (masks / "slide_B.tiff").exists()
+
+    # A's painted tiles carry their clusters (A tile (0,0)->0, (32,32)->2)
+    a = stub.OpenSlideSlide(str(masks / "slide_A.tiff"))
+    assert a.level_dimensions[0] == (l0_w, l0_h)
+    assert int(a._l0.crop(1, 1, 1, 1).numpy().item()) == 0
+    assert int(a._l0.crop(65, 65, 1, 1).numpy().item()) == 2
+    a.close()
+
+    # re-run: both already written -> all skipped, still 0 failed
+    ok, skip, fail = make_mask_slide.process(
+        slides_df, level, (tex_w, tex_h), C, parts_by_slide, masks, targets
+    )
+    assert (ok, skip, fail) == (0, 2, 1)  # 2 skipped, C fails again
+
+
+def test_process_isolates_unopenable_wsi(tmp_path: Path):
+    """A WSI that can't be opened (e.g. not mounted) is skipped, not fatal, and the
+    other slide still gets its mask."""
+    l0_w, l0_h, level, tex_w, tex_h = 1024, 512, 1, 64, 64
+    C = np.eye(4, dtype=np.float32)
+    sid_a, sid_b = b"\x01" * 8, b"\x02" * 8
+
+    wsi_b = _fake_wsi(tmp_path, "slide_B.mrxs", l0_w, l0_h)
+    # A points at a missing file -> OpenSlide(StubSlide) will fail to open it
+    masks = tmp_path / "masks"
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    s0 = shards / "p0.parquet"
+    _shard(s0, [(sid_a, 0, 0, C[0]), (sid_b, 0, 0, C[1])])
+
+    slides_df = pd.DataFrame([
+        {"slide_id": sid_a, "path": str(tmp_path / "nope.mrxs"), "level": level,
+         "tile_extent_x": tex_w, "tile_extent_y": tex_h},
+        {"slide_id": sid_b, "path": str(wsi_b), "level": level,
+         "tile_extent_x": tex_w, "tile_extent_y": tex_h},
+    ])
+    parts_by_slide = {sid_a.hex(): [str(s0)], sid_b.hex(): [str(s0)]}
+
+    ok, skip, fail = make_mask_slide.process(
+        slides_df, level, (tex_w, tex_h), C, parts_by_slide, masks,
+        list(slides_df.itertuples(index=False)),
+    )
+    # A fails to open (missing file) -> counted failed; B still written
+    assert (ok, fail) == (1, 1)
+    assert (masks / "slide_B.tiff").exists()
