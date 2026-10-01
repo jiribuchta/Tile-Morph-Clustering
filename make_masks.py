@@ -377,11 +377,21 @@ def main_run(config: DictConfig) -> None:
           f"({time.monotonic() - t0:.0f}s total)")
 
 
+def _log_dir(logger: MLFlowLogger, d: Path, artifact_path: str) -> None:
+    """Upload a directory's contents (silently skip if it doesn't exist)."""
+    if d.exists():
+        logger.log_artifacts(str(d), artifact_path)
+
+
 @hydra.main(config_path="configs", config_name="masks", version_base=None)
 @autolog
 def main(config: DictConfig, logger: MLFlowLogger) -> None:
+    out = Path(config.out)
     main_run(config)
-    logger.log_artifacts(str(Path(config.out) / "manifest.json"), "masks")
+    # manifest (always) + the masks themselves + the xOpat report config, to mlflow
+    logger.log_artifacts(str(out / "manifest.json"), "masks")
+    _log_dir(logger, out / "masks", "masks")
+    _log_dir(logger, out / "report_conf", "report_conf")
 
 
 if __name__ == "__main__":
