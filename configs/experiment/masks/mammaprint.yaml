@@ -3,4 +3,4 @@
 defaults:
   - _self_
 
-out: ${project_path}/masks_k32
+out: ${project_path}/masks_k32_v2

@@ -181,3 +181,5 @@ lightning_logs/
 # Project
 /data
 /output
+/outputs
+*.png
