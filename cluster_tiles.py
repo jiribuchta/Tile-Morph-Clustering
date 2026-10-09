@@ -142,6 +142,8 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
             cur = _name
             print(f"  pass1 {_name} ({time.monotonic() - t0:.0f}s)")
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
+        if config.carcinoma_only:
+            m &= df["carcinoma"].to_numpy() == 1
         for sid, ok in zip(df["slide_id"], m, strict=True):
             if ok:
                 h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
@@ -171,6 +173,8 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
             cur = _name
             print(f"  pass2 {_name} ({time.monotonic() - t0:.0f}s)")
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
+        if config.carcinoma_only:
+            m &= df["carcinoma"].to_numpy() == 1
         if not m.any():
             continue
         sid_hex = [

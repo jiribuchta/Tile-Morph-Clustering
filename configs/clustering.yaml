@@ -8,6 +8,7 @@ k: 32
 n_init: 4
 tiles_per_slide: 256
 min_tissue: 0.5
+carcinoma_only: true  # cluster only tiles with carcinoma==1 (tile-level classifier)
 parts: 0  # max tile parts to process (0 = all)
 seed: 0
 
