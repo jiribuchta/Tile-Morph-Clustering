@@ -176,7 +176,9 @@ def main():
                     continue
                 idx = np.flatnonzero(inv == ci)
                 j = np.searchsorted(r["encs"], enc[idx])
-                ok = (j < len(r["encs"])) & (r["encs"][j] == enc[idx])
+                ok = j < len(r["encs"])
+                j, idx = j[ok], idx[ok]
+                ok = r["encs"][j] == enc[idx]
                 idx, j = idx[ok], j[ok]
                 rl = r["labels"][j]
                 keep = rl > 0  # label 0 = tile in a dropped (too-small) region
