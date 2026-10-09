@@ -43,6 +43,38 @@ from rationai.mlkit.lightning.loggers import MLFlowLogger
 CHEAP_COLUMNS = ["slide_id", "x", "y", "carcinoma", "tissue_roi_percentage"]
 
 
+def load_heatmap_mask(csv_path: str) -> dict[str, np.ndarray]:
+    """slide_id -> int64 array of encoded tile coords (x*1e6+y) from the heatmap CSV.
+
+    The CSV comes from heatmap_to_csv.py (one row per carcinoma tile).
+    """
+    import csv as _csv
+
+    d: dict[str, list[int]] = {}
+    with open(csv_path, newline="") as f:
+        for row in _csv.DictReader(f):
+            d.setdefault(row["slide_id"], []).append(
+                int(row["x"]) * 1_000_000 + int(row["y"])
+            )
+    return {k: np.asarray(v, dtype=np.int64) for k, v in d.items()}
+
+
+def in_heatmap_mask(df: pd.DataFrame, mask: dict[str, np.ndarray]) -> np.ndarray:
+    """Boolean per row: tile (slide_id, x, y) present in the heatmap mask."""
+    sids = df["slide_id"].to_numpy()
+    enc = df["x"].to_numpy().astype(np.int64) * 1_000_000 + df["y"].to_numpy().astype(np.int64)
+    out = np.zeros(len(df), dtype=bool)
+    by_slide: dict[str, list[int]] = {}
+    for i, sid in enumerate(sids):
+        h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
+        by_slide.setdefault(h, []).append(i)
+    for h, idx in by_slide.items():
+        arr = mask.get(h)
+        if arr is not None:
+            out[np.asarray(idx)] = np.isin(enc[np.asarray(idx)], arr)
+    return out
+
+
 def resolve_sources(data: DictConfig) -> tuple[list[tuple[str, str, int]], str]:
     """Return list of (name, local_path, size) for tile parts; also local slides.parquet path.
 
@@ -120,6 +152,15 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
     parts = parts[: config.parts] if config.parts else parts
     print(f"  {len(parts)} tile parts, ~{sum(p[2] for p in parts) / 1e9:.1f} GB total")
 
+    # optional: carcinoma mask from the rasterized heatmaps (heatmap_to_csv.py)
+    mask = None
+    if config.get("heatmap_csv"):
+        mask = load_heatmap_mask(config.heatmap_csv)
+        print(
+            f"  heatmap mask: {sum(len(v) for v in mask.values())} tiles "
+            f"across {len(mask)} slides from {config.heatmap_csv}"
+        )
+
     slides = pd.read_parquet(slides_path)
     slides["slide_id"] = slides["id"].apply(
         lambda b: b.hex() if isinstance(b, (bytes, bytearray)) else str(b)
@@ -142,7 +183,9 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
             cur = _name
             print(f"  pass1 {_name} ({time.monotonic() - t0:.0f}s)")
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
-        if config.carcinoma_only:
+        if mask is not None:
+            m &= in_heatmap_mask(df, mask)
+        elif config.carcinoma_only:
             m &= df["carcinoma"].to_numpy() == 1
         for sid, ok in zip(df["slide_id"], m, strict=True):
             if ok:
@@ -173,7 +216,9 @@ def run_clustering(config: DictConfig, logger: MLFlowLogger) -> None:
             cur = _name
             print(f"  pass2 {_name} ({time.monotonic() - t0:.0f}s)")
         m = df["tissue_roi_percentage"].to_numpy() >= config.min_tissue
-        if config.carcinoma_only:
+        if mask is not None:
+            m &= in_heatmap_mask(df, mask)
+        elif config.carcinoma_only:
             m &= df["carcinoma"].to_numpy() == 1
         if not m.any():
             continue

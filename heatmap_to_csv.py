@@ -16,7 +16,7 @@ from pathlib import Path
 import mlflow
 import numpy as np
 import pandas as pd
-from PIL import Image
+import tifffile
 
 TRACKING_URI = "https://mlflow.rationai.cloud.trusted.e-infra.cz"
 HEATMAP_RUN = "25f15b4a379446c085c4568f2b08f703"  # Virchow2 Tile Threshold Estimation MMCI B20-24 Val
@@ -65,8 +65,6 @@ def main():
                     help="only write tiles with value >= this (0.5 = carcinoma tiles)")
     args = ap.parse_args()
 
-    Image.MAX_IMAGE_PIXELS = None  # full-slide heatmaps trip PIL's bomb check
-
     mlflow.set_tracking_uri(TRACKING_URI)
     slides = pd.read_parquet(
         mlflow.artifacts.download_artifacts(
@@ -96,16 +94,27 @@ def main():
             if name not in hm_files:
                 print(f"  [skip] no heatmap for {name}")
                 continue
-            img = Image.open(hm_files[name])
-            if img.size != (s["extent_x"], s["extent_y"]):
-                print(f"  [skip] {name}: heatmap {img.size} != extent {(s['extent_x'], s['extent_y'])}")
+            # tifffile decodes straight into numpy: no second 5.8GB PIL buffer
+            a = tifffile.imread(hm_files[name])  # uint8, rows=y, cols=x, level 1
+            if a.shape != (s["extent_y"], s["extent_x"]):
+                print(f"  [skip] {name}: heatmap {a.shape[::-1]} != extent {(s['extent_x'], s['extent_y'])}")
                 continue
-            a = np.asarray(img)  # uint8, rows=y, cols=x, level 1
             tx, ty, sx, sy = (int(s[k]) for k in ("tile_extent_x", "tile_extent_y", "stride_x", "stride_y"))
+            ox, oy = sx, sy  # original level-1 stride, for CSV coords
+            # 2x2 block average first: cumsum then runs on 1/4 the pixels (~6x faster).
+            # tile means preserved up to a 0.5/255 floor error (tx, sy, extents all even)
+            if a.shape[0] % 2 == 0 and a.shape[1] % 2 == 0:
+                b = a[0::2, 0::2].astype(np.uint16)
+                b += a[0::2, 1::2]
+                b += a[1::2, 0::2]
+                b += a[1::2, 1::2]
+                a = (b >> 2).astype(np.uint8)
+                del b
+                tx, ty, sx, sy = tx // 2, ty // 2, sx // 2, sy // 2
             vals = tile_means(a, tx, ty, sx, sy)  # (n_y, n_x)
             del a
-            xs = np.arange(vals.shape[1]) * sx
-            ys = np.arange(vals.shape[0]) * sy
+            xs = np.arange(vals.shape[1]) * ox
+            ys = np.arange(vals.shape[0]) * oy
             X, Y = np.meshgrid(xs, ys, indexing="xy")
             m = vals >= args.min_value
             n = int(m.sum())
