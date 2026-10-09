@@ -17,8 +17,9 @@ import mlflow
 import numpy as np
 import pandas as pd
 from PIL import Image
+from tqdm import tqdm
 
-TRACKING_URI = "https://mlflow.rationai.cloud.trusted.e-infra.cz"
+TRACKING_URI = "http://mlflow.rationai-mlflow:5000"
 HEATMAP_RUN = "25f15b4a379446c085c4568f2b08f703"  # Virchow2 Tile Threshold Estimation MMCI B20-24 Val
 SLIDES_RUN = "569f66d87bd849129a7a0604c889ee91"  # Tile Embeddings (V2) MMCI B20-24 Val
 
@@ -61,7 +62,7 @@ def tile_means(a, tx, ty, sx, sy):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="heatmaps_tiles.csv")
-    ap.add_argument("--min-value", type=float, default=0.0,
+    ap.add_argument("--min-value", type=float, default=0.5,
                     help="only write tiles with value >= this (0.5 = carcinoma tiles)")
     args = ap.parse_args()
 
@@ -91,7 +92,7 @@ def main():
     t0 = time.monotonic()
     with open(args.out, "w", newline="") as f:
         f.write("slide_id,slide_name,x,y,value\n")
-        for i, s in slides.iterrows():
+        for i, s in tqdm(slides.iterrows()):
             name = s["slide_name"]
             if name not in hm_files:
                 print(f"  [skip] no heatmap for {name}")
