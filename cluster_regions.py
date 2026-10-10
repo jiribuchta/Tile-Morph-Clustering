@@ -100,6 +100,8 @@ def main():
     ap.add_argument("--k", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="out_regions")
+    ap.add_argument("--tile-size", type=int, default=256,
+                    help="pixel size of one tile (for upscaling masks to WSI resolution)")
     ap.add_argument("--load-x", action="store_true",
                     help="load X_regions.npy + region_meta.parquet from --out, skip embedding collection")
     args = ap.parse_args()
@@ -249,7 +251,13 @@ def main():
             if c is not None:
                 lut[i] = c + 1
         name = r["name"].replace("/", "_")
-        tifffile.imwrite(masks_dir / f"{name}.tiff", lut[g])
+        # upscale from tile-grid to WSI pixel resolution
+        if args.tile_size > 1:
+            mask = np.repeat(lut[g], args.tile_size, axis=0)
+            mask = np.repeat(mask, args.tile_size, axis=1)
+        else:
+            mask = lut[g]
+        tifffile.imwrite(masks_dir / f"{name}.tiff", mask)
         n_masks += 1
     print(f"  wrote {n_masks} tiff masks to {masks_dir}")
 
