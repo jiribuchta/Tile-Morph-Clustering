@@ -102,16 +102,21 @@ def main():
     ap.add_argument("--k", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="out_regions")
+    ap.add_argument("--data", default=None,
+                    help="shared data dir (X_regions.npy, region_meta.parquet). "
+                         "Default: same as --out.")
     ap.add_argument("--wsi-root", default="/mnt/bioptic_tree",
                     help="root of bioptic tree for WSI paths")
     ap.add_argument("--load-x", action="store_true",
-                    help="load X_regions.npy + region_meta.parquet from --out, skip embedding collection")
+                    help="load X_regions.npy + region_meta.parquet from --data, skip embedding collection")
     args = ap.parse_args()
     if not args.load_x and not args.embeddings:
         raise SystemExit("--embeddings required unless --load-x")
     t0 = time.monotonic()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    data = Path(args.data) if args.data else out
+    data.mkdir(parents=True, exist_ok=True)
 
     # morphology: slide_name -> morphology (, or tab separated)
     import pandas as pd
@@ -136,13 +141,13 @@ def main():
     print(f"  {len(morph_by_sid)} slides have a morphology label")
 
     if args.load_x:
-        print(f"loading cached X from {out} (--load-x)")
-        X = np.load(out / "X_regions.npy")
+        print(f"loading cached X from {data} (--load-x)")
+        X = np.load(data / "X_regions.npy")
         # region_meta.parquet (new runs) or regions.parquet (older runs, same row order)
-        if (out / "region_meta.parquet").exists():
-            meta = pd.read_parquet(out / "region_meta.parquet")
+        if (data / "region_meta.parquet").exists():
+            meta = pd.read_parquet(data / "region_meta.parquet")
         else:
-            meta = pd.read_parquet(out / "regions.parquet")[
+            meta = pd.read_parquet(data / "regions.parquet")[
                 ["slide_id", "region", "n_tiles", "cx", "cy"]
             ]
         region_meta = meta.to_dict("records")
@@ -226,8 +231,8 @@ def main():
         norms = np.linalg.norm(X, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         X /= norms
-        np.save(out / "X_regions.npy", X)
-        pd.DataFrame(region_meta).to_parquet(out / "region_meta.parquet")
+        np.save(data / "X_regions.npy", X)
+        pd.DataFrame(region_meta).to_parquet(data / "region_meta.parquet")
 
     print(f"fitting KMeans k={args.k} on {X.shape}...")
     km = KMeans(n_clusters=args.k, n_init=4, random_state=args.seed).fit(X)
