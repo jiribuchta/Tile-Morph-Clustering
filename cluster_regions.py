@@ -292,10 +292,14 @@ def main():
             "dir_name: /mnt/projects/breast_cancer/tile_morph_clustering/region_clustering_1/masks",
             f"dir_name: {masks_dir.resolve()}",
         )
+        # restrict background to only slides that have masks
+        slide_files = [f"{r['name'].replace('/', '_')}.mrxs" for r in regions.values() if r["grid"].max() > 0]
+        globs_block = "\n".join(f'  - "{f}"' for f in sorted(slide_files))
+        tpl = tpl.replace('globs: ["*.mrxs"]', f"globs:\n{globs_block}")
         dest = out / "report_conf" / "reporter" / "region_clustering.yaml"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(tpl)
-        print(f"wrote report config: {dest}")
+        print(f"wrote report config: {dest} ({len(slide_files)} slides)")
 
     print(f"\nmorphology vs majority cluster (slides):")
     print(ct.to_string())
