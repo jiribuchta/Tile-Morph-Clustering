@@ -283,6 +283,20 @@ def main():
         "morphology_vs_cluster": ct.reset_index().to_dict("records"),
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
+
+    # report config (never fatal)
+    tpl_path = Path(__file__).parent / "report_conf" / "reporter" / "region_clustering.yaml"
+    if tpl_path.exists():
+        tpl = tpl_path.read_text()
+        tpl = tpl.replace(
+            "dir_name: /mnt/projects/breast_cancer/tile_morph_clustering/region_clustering_1/masks",
+            f"dir_name: {masks_dir.resolve()}",
+        )
+        dest = out / "report_conf" / "reporter" / "region_clustering.yaml"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(tpl)
+        print(f"wrote report config: {dest}")
+
     print(f"\nmorphology vs majority cluster (slides):")
     print(ct.to_string())
     print(f"wrote: {out} ({time.monotonic()-t0:.0f}s total)")
