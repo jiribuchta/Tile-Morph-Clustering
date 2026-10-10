@@ -134,7 +134,13 @@ def main():
     if args.load_x:
         print(f"loading cached X from {out} (--load-x)")
         X = np.load(out / "X_regions.npy")
-        meta = pd.read_parquet(out / "region_meta.parquet")
+        # region_meta.parquet (new runs) or regions.parquet (older runs, same row order)
+        if (out / "region_meta.parquet").exists():
+            meta = pd.read_parquet(out / "region_meta.parquet")
+        else:
+            meta = pd.read_parquet(out / "regions.parquet")[
+                ["slide_id", "region", "n_tiles", "cx", "cy"]
+            ]
         region_meta = meta.to_dict("records")
         matched = int(meta["n_tiles"].sum())
     else:
