@@ -19,7 +19,7 @@ submit_job(
         "git clone git@gitlab.ics.muni.cz:rationai/digital-pathology/tools/report.git workdir",
         "cd workdir",
         "pip install -e .",
-        "python -m report --config-dir /mnt/projects/breast_cancer/tile_morph_clustering/region_clustering_1/report_conf/reporter +reporter=region_clustering user=jiribuchta",
+        "python -m report --config-dir /mnt/projects/breast_cancer/tile_morph_clustering/region_clustering_1/report_conf +reporter=region_clustering user=jiribuchta",
     ],
     storage=[storage.secure.DATA, storage.secure.PROJECTS],
 )
