@@ -28,10 +28,9 @@ defaults:
 title: {title}
 
 background:
-  _target_: report.masks.BasicImageRetriever
-  source_dir: {wsi_root}
-  globs:
-{globs}
+  _target_: report.masks.SlideRetriever
+  paths:
+{paths}
   layer_name: WSI
 
 mask_retrievers:
@@ -113,31 +112,28 @@ def main():
     if not mask_files:
         raise SystemExit(f"no .tiff files in {masks_dir}")
 
-    # generate relative WSI paths from slide names
-    # slide name like 2023_04052-1-N -> 2023/04/052/2023_04052-1-N/2023_04052-1-N.mrxs
-    globs_list = []
+    # generate full WSI paths from slide names
+    # slide name like 2023_04052-1-N -> /mnt/bioptic_tree/2023/04/052/2023_04052-1-N/2023_04052-1-N.mrxs
+    paths_list = []
     missing = []
     for f in mask_files:
         name = f.stem
-        # parse: YYYY_MMDDD-suffix
         year = name[:4]
         month = name[5:7]
         day = name[7:10]
-        rel = f"{year}/{month}/{day}/{name}/{name}.mrxs"
-        full = wsi_root / rel
+        full = wsi_root / year / month / day / name / f"{name}.mrxs"
         if full.exists():
-            globs_list.append(rel)
+            paths_list.append(str(full))
         else:
             missing.append(name)
 
-    if not globs_list:
+    if not paths_list:
         raise SystemExit(f"no WSI files found under {wsi_root} for {len(mask_files)} masks")
     if missing:
         print(f"[warn] {len(missing)} WSIs not found, e.g. {missing[:5]}")
-    print(f"{len(globs_list)}/{len(mask_files)} slides matched")
+    print(f"{len(paths_list)}/{len(mask_files)} slides matched")
 
-    # build globs list (relative paths work with rglob)
-    globs = "\n".join(f'    - "{g}"' for g in sorted(globs_list))
+    paths = "\n".join(f'    - "{p}"' for p in sorted(paths_list))
 
     # colormap entries
     n_colors = len(PALETTE)
@@ -150,9 +146,9 @@ def main():
     cfg = TEMPLATE.format(
         masks_dir=str(masks_dir),
         wsi_root=str(wsi_root),
-        n_slides=len(globs_list),
+        n_slides=len(paths_list),
         title=args.title,
-        globs=globs,
+        paths=paths,
         colormap=colormap,
         n_colors=n_colors + 1,
         breaks=breaks,
