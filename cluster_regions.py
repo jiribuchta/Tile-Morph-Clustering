@@ -251,14 +251,18 @@ def main():
             if c is not None:
                 lut[i] = c + 1
         name = r["name"].replace("/", "_")
-        # upscale from tile-grid to WSI pixel resolution
+        # upscale from tile-grid to WSI pixel resolution (row-by-row to save RAM)
         if args.tile_size > 1:
-            mask = np.repeat(lut[g], args.tile_size, axis=0)
-            mask = np.repeat(mask, args.tile_size, axis=1)
+            h, w = g.shape
+            with tifffile.TiffFile(masks_dir / f"{name}.tiff", mode="w") as t:
+                t.shape = (h * args.tile_size, w * args.tile_size)
+                t.dtype = np.uint8
+                for i in range(h):
+                    row = np.tile(lut[g[i]], args.tile_size)
+                    for _ in range(args.tile_size):
+                        t.write(row)
         else:
-            mask = lut[g]
-        tifffile.imwrite(masks_dir / f"{name}.tiff", mask)
-        del mask
+            tifffile.imwrite(masks_dir / f"{name}.tiff", lut[g])
         n_masks += 1
     print(f"  wrote {n_masks} tiff masks to {masks_dir}")
 
