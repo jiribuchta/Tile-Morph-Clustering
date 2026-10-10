@@ -18,6 +18,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--morphology", required=True)
+    ap.add_argument("--tiles", required=True, help="heatmaps_tiles.csv (for slide_id -> slide_name join)")
     ap.add_argument("--k", type=int, default=3)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -28,8 +29,15 @@ def main():
         meta = pd.read_parquet(out / "region_meta.parquet")
     else:
         meta = pd.read_parquet(out / "regions.parquet")[["slide_id", "region", "n_tiles", "cx", "cy"]]
-    morph = pd.read_csv(args.morphology)
-    morph_by_sid = dict(zip(morph["slide_name"], morph["morphology"]))
+    # morphology: slide_name -> morphology, then slide_id -> morphology via tiles CSV
+    with open(args.morphology) as f:
+        sep = "\t" if "\t" in f.readline() else ","
+    morph = pd.read_csv(args.morphology, sep=sep)
+    morph_by_name = dict(zip(morph["slide_name"].str.strip(), morph["morphology"].astype(str).str.strip()))
+    tiles = pd.read_csv(args.tiles, usecols=["slide_id", "slide_name"])
+    tiles = tiles.drop_duplicates("slide_id")
+    tiles["morphology"] = tiles["slide_name"].str.strip().map(morph_by_name)
+    morph_by_sid = dict(zip(tiles["slide_id"], tiles["morphology"]))
 
     # average region embeddings per slide (weighted by n_tiles)
     slide_ids = meta["slide_id"].values
@@ -63,8 +71,8 @@ def main():
 
     summary = {
         "k": args.k,
-        "n_slides": len(unique_slides),
-        "n_slides_labeled": df["morphology"].notna().sum(),
+        "n_slides": int(len(unique_slides)),
+        "n_slides_labeled": int(df["morphology"].notna().sum()),
         "silhouette_subsample": round(float(sil), 4),
         "morphology_vs_cluster": ct.reset_index().to_dict("records"),
     }
