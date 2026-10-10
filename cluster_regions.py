@@ -258,6 +258,7 @@ def main():
         else:
             mask = lut[g]
         tifffile.imwrite(masks_dir / f"{name}.tiff", mask)
+        del mask
         n_masks += 1
     print(f"  wrote {n_masks} tiff masks to {masks_dir}")
 
