@@ -22,8 +22,10 @@ import time
 from pathlib import Path
 
 import numpy as np
+import openslide
 import pyarrow.parquet as pq
-import tifffile
+import pyvips
+from ratiopath.masks import write_big_tiff
 from scipy import ndimage
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -100,8 +102,8 @@ def main():
     ap.add_argument("--k", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="out_regions")
-    ap.add_argument("--tile-size", type=int, default=256,
-                    help="pixel size of one tile (for upscaling masks to WSI resolution)")
+    ap.add_argument("--wsi-root", default="/mnt/bioptic_tree",
+                    help="root of bioptic tree for WSI paths")
     ap.add_argument("--load-x", action="store_true",
                     help="load X_regions.npy + region_meta.parquet from --out, skip embedding collection")
     args = ap.parse_args()
@@ -236,35 +238,62 @@ def main():
     print(f"  inertia={km.inertia_:.1f}  silhouette(subsample)={sil:.3f}")
     np.save(out / "centroids.npy", km.cluster_centers_.astype(np.float32))
 
-    # tiff mask per slide: 0 = background, cluster c -> c+1
+    # BigTIFF mask per slide: 0 = background, cluster c -> c+1 (xOpat-ready)
     cluster_by_key = {(m["slide_id"], m["region"]): c for m, c in zip(region_meta, labels)}
     masks_dir = out / "masks"
     masks_dir.mkdir(exist_ok=True)
-    n_masks = 0
+    n_masks = n_skip = n_fail = 0
     for sid, r in regions.items():
         g = r["grid"]
         if g.max() == 0:
             continue
+        name = r["name"].replace("/", "_")
+        dest = masks_dir / f"{name}.tiff"
+        if dest.exists():
+            n_skip += 1
+            continue
+        # WSI path from slide name: YYYY_MMDDD-suffix -> root/YYYY/MMDDD/name/name.mrxs
+        year, month, day = name[:4], name[5:7], name[7:10]
+        wsi_path = Path(args.wsi_root) / year / month / day / name / f"{name}.mrxs"
+        if not wsi_path.exists():
+            n_fail += 1
+            print(f"  FAIL {name}: WSI not found at {wsi_path}")
+            continue
+        # open WSI, get level-0 and level-1 (tile grid) dimensions
+        s = openslide.OpenSlide(str(wsi_path))
+        l0 = s.level_dimensions[0]
+        # level-1 = tile grid: H*112 x W*112
+        H, W = g.shape
+        lref = (W * 112, H * 112)
+        sx, sy = l0[0] / lref[0], l0[1] / lref[1]
+        mpp_x = float(s.properties["openslide.mpp-x"])
+        mpp_y = float(s.properties["openslide.mpp-y"])
+        s.close()
+        # paint tiles into level-0 array
+        arr = np.zeros((l0[1], l0[0]), dtype=np.uint8)
         lut = np.zeros(g.max() + 1, dtype=np.uint8)
         for i in range(1, len(r["regions"]) + 1):
             c = cluster_by_key.get((sid, i))
             if c is not None:
                 lut[i] = c + 1
-        name = r["name"].replace("/", "_")
-        # upscale from tile-grid to WSI pixel resolution (row-by-row to save RAM)
-        if args.tile_size > 1:
-            h, w = g.shape
-            with tifffile.TiffFile(masks_dir / f"{name}.tiff", mode="w") as t:
-                t.shape = (h * args.tile_size, w * args.tile_size)
-                t.dtype = np.uint8
-                for i in range(h):
-                    row = np.tile(lut[g[i]], args.tile_size)
-                    for _ in range(args.tile_size):
-                        t.write(row)
-        else:
-            tifffile.imwrite(masks_dir / f"{name}.tiff", lut[g])
+        for row in range(H):
+            for col in range(W):
+                label = lut[g[row, col]]
+                if label == 0:
+                    continue
+                x0 = int(round(col * 112 * sx))
+                y0 = int(round(row * 112 * sy))
+                x1 = min(l0[0], x0 + int(round(112 * sx)))
+                y1 = min(l0[1], y0 + int(round(112 * sy)))
+                if x1 > x0 and y1 > y0:
+                    arr[y0:y1, x0:x1] = label
+        # write BigTIFF with pyramid
+        img = pyvips.Image.new_from_array(arr)
+        write_big_tiff(img, dest, mpp_x, mpp_y)
+        del arr
         n_masks += 1
-    print(f"  wrote {n_masks} tiff masks to {masks_dir}")
+        print(f"  [{n_masks}] {dest.name} {l0[1]}x{l0[0]}")
+    print(f"  wrote {n_masks}, skipped {n_skip}, failed {n_fail} -> {masks_dir}")
 
     # per-slide majority cluster vs morphology
     df = pd.DataFrame(region_meta)
