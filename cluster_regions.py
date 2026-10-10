@@ -94,13 +94,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiles", default="heatmaps_tiles.csv")
     ap.add_argument("--morphology", default="slide_morphology.csv")
-    ap.add_argument("--embeddings", required=True, help="sharded dir with tiles/*.parquet")
+    ap.add_argument("--embeddings", help="sharded dir with tiles/*.parquet (not needed with --load-x)")
     ap.add_argument("--min-value", type=float, default=0.5)
     ap.add_argument("--min-region", type=int, default=8, help="drop regions smaller than this many tiles")
     ap.add_argument("--k", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="out_regions")
+    ap.add_argument("--load-x", action="store_true",
+                    help="load X_regions.npy + region_meta.parquet from --out, skip embedding collection")
     args = ap.parse_args()
+    if not args.load_x and not args.embeddings:
+        raise SystemExit("--embeddings required unless --load-x")
     t0 = time.monotonic()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -127,85 +131,93 @@ def main():
                 morph_by_sid.setdefault(row["slide_id"], morph_by_name[nm])
     print(f"  {len(morph_by_sid)} slides have a morphology label")
 
-    print("indexing embedding parts (slide_id column only)...")
-    slide_to_part, all_parts = index_parts(args.embeddings)
-    target_parts = sorted({slide_to_part[s] for s in regions if s in slide_to_part})
-    missing = [s for s in regions if s not in slide_to_part]
-    print(f"  {len(all_parts)} parts total, {len(target_parts)} needed for our slides")
-    if missing:
-        print(f"  [warn] {len(missing)} slides not found in embeddings, e.g. {missing[:5]}")
+    if args.load_x:
+        print(f"loading cached X from {out} (--load-x)")
+        X = np.load(out / "X_regions.npy")
+        meta = pd.read_parquet(out / "region_meta.parquet")
+        region_meta = meta.to_dict("records")
+        matched = int(meta["n_tiles"].sum())
+    else:
+        print("indexing embedding parts (slide_id column only)...")
+        slide_to_part, all_parts = index_parts(args.embeddings)
+        target_parts = sorted({slide_to_part[s] for s in regions if s in slide_to_part})
+        missing = [s for s in regions if s not in slide_to_part]
+        print(f"  {len(all_parts)} parts total, {len(target_parts)} needed for our slides")
+        if missing:
+            print(f"  [warn] {len(missing)} slides not found in embeddings, e.g. {missing[:5]}")
 
-    # accumulate per-region embedding sums
-    sums: dict[int, np.ndarray] = {}
-    counts: dict[int, int] = {}
-    region_meta: list[dict] = []  # one row per region, index == region key
-    for sid, r in regions.items():
-        for i, (n, cx, cy) in enumerate(r["regions"], start=1):
-            key = (sid, i)
-            sums[key] = np.zeros(2560, dtype=np.float32)
-            counts[key] = 0
-            region_meta.append({"slide_id": sid, "region": i, "n_tiles": n, "cx": cx, "cy": cy})
+        # accumulate per-region embedding sums
+        sums: dict[int, np.ndarray] = {}
+        counts: dict[int, int] = {}
+        region_meta: list[dict] = []  # one row per region, index == region key
+        for sid, r in regions.items():
+            for i, (n, cx, cy) in enumerate(r["regions"], start=1):
+                key = (sid, i)
+                sums[key] = np.zeros(2560, dtype=np.float32)
+                counts[key] = 0
+                region_meta.append({"slide_id": sid, "region": i, "n_tiles": n, "cx": cx, "cy": cy})
 
-    print(f"collecting embeddings from {len(target_parts)} parts...")
-    matched = 0
-    for pi, part in enumerate(target_parts):
-        pf = pq.ParquetFile(part)
-        for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=4096):
-            sids = batch.column("slide_id").to_numpy(zero_copy_only=False)
-            xs = batch.column("x").to_numpy(zero_copy_only=False).astype(np.int64)
-            ys = batch.column("y").to_numpy(zero_copy_only=False).astype(np.int64)
-            emb = batch.column("embedding").values.to_numpy(zero_copy_only=False)
-            n = len(batch)
-            if emb.size % n:
-                raise SystemExit("ragged embeddings; not supported")
-            emb = emb.reshape(n, -1).astype(np.float32)
-            if emb.shape[1] != 2560:
-                raise SystemExit(f"unexpected embedding dim {emb.shape[1]} (expected 2560)")
-            # L2 normalize rows (in place)
-            norms = np.linalg.norm(emb, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            emb /= norms
-            enc = xs * ENC + ys
-            sids_h = np.array(
-                [s.hex() if isinstance(s, (bytes, bytearray)) else str(s) for s in sids]
-            )
-            codes, inv = np.unique(sids_h, return_inverse=True)
-            for ci, h in enumerate(codes):
-                r = regions.get(h)
-                if r is None:
-                    continue
-                idx = np.flatnonzero(inv == ci)
-                j = np.searchsorted(r["encs"], enc[idx])
-                ok = j < len(r["encs"])
-                j, idx = j[ok], idx[ok]
-                ok = r["encs"][j] == enc[idx]
-                idx, j = idx[ok], j[ok]
-                rl = r["labels"][j]
-                keep = rl > 0  # label 0 = tile in a dropped (too-small) region
-                idx, rl = idx[keep], rl[keep]
-                if not len(idx):
-                    continue
-                for rid in np.unique(rl):
-                    m = rl == rid
-                    key = (h, int(rid))
-                    sums[key] += emb[idx[m]].sum(axis=0)
-                    counts[key] += int(m.sum())
-                    matched += int(m.sum())
-        if (pi + 1) % 10 == 0 or pi == len(target_parts) - 1:
-            print(f"  part {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s)")
-    print(f"  matched {matched} tiles into regions")
+        print(f"collecting embeddings from {len(target_parts)} parts...")
+        matched = 0
+        for pi, part in enumerate(target_parts):
+            pf = pq.ParquetFile(part)
+            for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=4096):
+                sids = batch.column("slide_id").to_numpy(zero_copy_only=False)
+                xs = batch.column("x").to_numpy(zero_copy_only=False).astype(np.int64)
+                ys = batch.column("y").to_numpy(zero_copy_only=False).astype(np.int64)
+                emb = batch.column("embedding").values.to_numpy(zero_copy_only=False)
+                n = len(batch)
+                if emb.size % n:
+                    raise SystemExit("ragged embeddings; not supported")
+                emb = emb.reshape(n, -1).astype(np.float32)
+                if emb.shape[1] != 2560:
+                    raise SystemExit(f"unexpected embedding dim {emb.shape[1]} (expected 2560)")
+                # L2 normalize rows (in place)
+                norms = np.linalg.norm(emb, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                emb /= norms
+                enc = xs * ENC + ys
+                sids_h = np.array(
+                    [s.hex() if isinstance(s, (bytes, bytearray)) else str(s) for s in sids]
+                )
+                codes, inv = np.unique(sids_h, return_inverse=True)
+                for ci, h in enumerate(codes):
+                    r = regions.get(h)
+                    if r is None:
+                        continue
+                    idx = np.flatnonzero(inv == ci)
+                    j = np.searchsorted(r["encs"], enc[idx])
+                    ok = j < len(r["encs"])
+                    j, idx = j[ok], idx[ok]
+                    ok = r["encs"][j] == enc[idx]
+                    idx, j = idx[ok], j[ok]
+                    rl = r["labels"][j]
+                    keep = rl > 0  # label 0 = tile in a dropped (too-small) region
+                    idx, rl = idx[keep], rl[keep]
+                    if not len(idx):
+                        continue
+                    for rid in np.unique(rl):
+                        m = rl == rid
+                        key = (h, int(rid))
+                        sums[key] += emb[idx[m]].sum(axis=0)
+                        counts[key] += int(m.sum())
+                        matched += int(m.sum())
+            if (pi + 1) % 10 == 0 or pi == len(target_parts) - 1:
+                print(f"  part {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s)")
+        print(f"  matched {matched} tiles into regions")
 
-    n_before = len(region_meta)
-    region_meta = [m for m in region_meta if counts[(m["slide_id"], m["region"])] > 0]
-    print(f"  {n_before - len(region_meta)} regions dropped (no matching embedding tiles)")
-    if not region_meta:
-        raise SystemExit("no tiles matched any region; check slide_id format / paths")
-    X = np.stack([sums[(m["slide_id"], m["region"])] / counts[(m["slide_id"], m["region"])]
-                  for m in region_meta])
-    norms = np.linalg.norm(X, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    X /= norms
-    np.save(out / "X_regions.npy", X)
+        n_before = len(region_meta)
+        region_meta = [m for m in region_meta if counts[(m["slide_id"], m["region"])] > 0]
+        print(f"  {n_before - len(region_meta)} regions dropped (no matching embedding tiles)")
+        if not region_meta:
+            raise SystemExit("no tiles matched any region; check slide_id format / paths")
+        X = np.stack([sums[(m["slide_id"], m["region"])] / counts[(m["slide_id"], m["region"])]
+                      for m in region_meta])
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        X /= norms
+        np.save(out / "X_regions.npy", X)
+        pd.DataFrame(region_meta).to_parquet(out / "region_meta.parquet")
 
     print(f"fitting KMeans k={args.k} on {X.shape}...")
     km = KMeans(n_clusters=args.k, n_init=4, random_state=args.seed).fit(X)
