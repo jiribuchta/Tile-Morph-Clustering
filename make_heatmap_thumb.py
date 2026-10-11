@@ -13,8 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import tifffile
 from PIL import Image
-Image.MAX_IMAGE_PIXELS = None  # WSI images are huge
 
 
 def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
@@ -64,26 +64,26 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
         print(f"  [skip] WSI not found in {slide_dir}")
         return
 
-    # Open at lowest resolution (highest pyramid level)
-    img = Image.open(wsi_path)
-    # Get the smallest level
-    level = 0
-    while True:
-        try:
-            img.reduce(level + 1, (1, 1))
-            level += 1
-        except Exception:
-            break
-    # Use a level that gives ~2000px wide image
-    target_w = 2000
-    base_w = img.size[0]
-    # Find right level: each level halves
-    import math
-    level = max(0, int(math.log2(base_w / target_w)))
-    try:
-        img = img.reduce(level, (1, 1))
-    except Exception:
-        img = img.resize((target_w, int(img.size[1] * target_w / img.size[0])))
+    # Read lowest pyramid level with tifffile (no full image load)
+    # Find a level that gives ~2000px wide
+    with tifffile.TiffFile(wsi_path) as tf:
+        # Pyramid levels: shape decreases by 2x each level
+        # Read level 0 shape to compute target level
+        h0, w0 = tf.shape[0], tf.shape[1]
+        import math
+        target_w = 2000
+        level = max(0, int(math.log2(w0 / target_w)))
+        # Read at that level
+        data = tf.data  # this reads level 0 by default
+        # For pyramid TIFFs, we need to read specific pages
+        # tifffile reads all pages; for large images use page index
+        # Each pyramid level is a separate page in the TIFF
+        # Page 0 = level 0, page 1 = level 1, etc.
+        if level < len(tf.pages):
+            data = tf.pages[level].array
+        else:
+            data = tf.pages[-1].array
+    img = Image.fromarray(data[:, :, :3] if data.ndim == 3 else data)
 
     # Scale heatmap to match image size
     hm_img = Image.fromarray(hm)
