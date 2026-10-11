@@ -22,6 +22,7 @@ from sklearn.metrics import silhouette_score
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pt-dir", required=True, help="dir with per-slide .pt files")
+    ap.add_argument("--tiles", help="heatmap CSV (slide_name,x,y,value) — only cluster these tiles")
     ap.add_argument("--slides", help="CSV with slide_name column (subset)")
     ap.add_argument("--morphology", help="CSV with slide_name + morphology")
     ap.add_argument("--ks", default="2,4,8,16,32", help="comma-separated k values")
@@ -39,17 +40,26 @@ def main():
     else:
         target_names = None
 
-    # Load all tile embeddings
+    # Load tile embeddings
     pt_dir = Path(args.pt_dir)
     pt_files = sorted(pt_dir.glob("*.pt"))
     if target_names:
         pt_files = [p for p in pt_files if p.stem in target_names]
         print(f"{len(pt_files)} .pt files to load")
 
+    # If --tiles provided, only keep those specific tiles
+    tile_filter = None
+    if args.tiles:
+        tiles_df = pd.read_csv(args.tiles)
+        tile_filter = tiles_df.set_index(["slide_name", "x", "y"]).index
+        print(f"Tile filter: {len(tiles_df)} tiles from {tiles_df['slide_name'].nunique()} slides")
+
     all_embs = []
     all_names = []
+    all_coords = []
     t0 = time.monotonic()
     for i, pt_file in enumerate(pt_files):
+        slide_name = pt_file.stem
         emb = torch.load(pt_file, map_location="cpu", weights_only=True)
         if isinstance(emb, dict):
             for k in ("embeddings", "embedding", "emb", "features"):
@@ -57,8 +67,35 @@ def main():
                     emb = emb[k]
                     break
         emb = emb.numpy().astype(np.float32)
+
+        if tile_filter is not None:
+            # Get coords for this slide from the filter
+            slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
+            if slide_tiles.empty:
+                continue
+            # Match by index position: tiles in .pt are in order, filter has x,y
+            # Build a set of (x,y) for fast lookup
+            coord_set = set(zip(slide_tiles["x"].astype(int), slide_tiles["y"].astype(int)))
+            # We need coords from the .pt file — if it has them, use them
+            # Otherwise assume sequential grid
+            if isinstance(emb, dict) and "x" in emb and "y" in emb:
+                xs = emb["x"].numpy().astype(int)
+                ys = emb["y"].numpy().astype(int)
+            else:
+                # No coords in .pt: can't filter spatially, keep all
+                xs = None
+                ys = None
+            if xs is not None:
+                mask = np.array([(x, y) in coord_set for x, y in zip(xs, ys)])
+                emb = emb[mask]
+                if emb.shape[0] == 0:
+                    continue
+            else:
+                # Can't filter without coords — skip filtering for this slide
+                pass
+
         all_embs.append(emb)
-        all_names.extend([pt_file.stem] * emb.shape[0])
+        all_names.extend([slide_name] * emb.shape[0])
         if (i + 1) % 10 == 0:
             print(f"  {i+1}/{len(pt_files)} ({time.monotonic()-t0:.0f}s)")
 
