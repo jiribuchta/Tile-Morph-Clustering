@@ -190,6 +190,9 @@ def main():
                     mask_target = np.ones(n, dtype=bool)
 
                 mask = (scores >= args.min_value) & mask_target
+                if pi == 0 and not hasattr(main, '_debugged'):
+                    main._debugged = True
+                    print(f"  [debug] first batch: {n} tiles, score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
                 if mask.any():
                     pd.DataFrame({
                         "slide_name": [names[i] for i in np.where(mask)[0]],
