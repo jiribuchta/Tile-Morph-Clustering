@@ -15,7 +15,7 @@ def main():
     args = ap.parse_args()
 
     slides = pd.read_parquet(args.slides_parquet)
-    morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig")
+    morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig", engine="python", on_bad_lines="skip")
 
     # join on id == record
     merged = slides[["id", "path"]].merge(
