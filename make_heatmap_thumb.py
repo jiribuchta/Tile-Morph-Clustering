@@ -51,9 +51,16 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     year = record[:4]    # 2020
     nn = record[5:7]     # 00
     nnn = record[7:10]   # 479
-    wsi_path = Path(wsi_root) / year / nn / nnn / slide_name / f"{slide_name}.tiff"
-    if not wsi_path.exists():
-        print(f"  [skip] WSI not found: {wsi_path}")
+    slide_dir = Path(wsi_root) / year / nn / nnn / slide_name
+    # Try common extensions
+    wsi_path = None
+    for ext in (".tiff", ".mrxs.tiff", ".ndpi", ".svs"):
+        candidate = slide_dir / f"{slide_name}{ext}"
+        if candidate.exists():
+            wsi_path = candidate
+            break
+    if wsi_path is None:
+        print(f"  [skip] WSI not found in {slide_dir}")
         return
 
     # Open at lowest resolution (highest pyramid level)
