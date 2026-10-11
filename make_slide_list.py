@@ -22,8 +22,8 @@ def main():
     slides["slide_name"] = slides["path"].apply(
         lambda p: p.rstrip("/").split("/")[-2] if "/" in p else p
     )
-    # 2020_00397-01-N -> 2020_00397
-    slides["record"] = slides["slide_name"].apply(lambda s: s.rsplit("-", 1)[0] if "-" in s else s)
+    # 2020_00397-01-N -> 2020_00397 (strip -NN-X suffix)
+    slides["record"] = slides["slide_name"].apply(lambda s: s.split("-")[0] if "-" in s else s)
     print(f"  slides.record samples: {slides['record'].head(3).tolist()}")
     print(f"  morph.record samples: {morph['record'].head(3).tolist()}")
     merged = slides[["record", "path", "slide_name"]].merge(
