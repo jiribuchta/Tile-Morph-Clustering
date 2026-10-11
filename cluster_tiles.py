@@ -53,7 +53,11 @@ def main():
     # Load tile embeddings
     pt_dir = Path(args.pt_dir)
     pt_files = sorted(pt_dir.glob("*.pt"))
-    if target_names:
+    # Filter to only slides that appear in our target set
+    if tiles_df is not None:
+        tile_slide_names = set(tiles_df["slide_name"])
+        pt_files = [p for p in pt_files if p.stem in tile_slide_names]
+    elif target_names:
         pt_files = [p for p in pt_files if p.stem in target_names]
     print(f"Loading {len(pt_files)} .pt files...")
 
