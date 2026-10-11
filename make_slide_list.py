@@ -5,6 +5,7 @@ Usage:
 """
 import argparse
 import pandas as pd
+import numpy as np
 
 
 def main():
@@ -12,6 +13,9 @@ def main():
     ap.add_argument("slides_parquet", help="slides.parquet with id + path columns")
     ap.add_argument("morphology_csv", help="CSV with record + morphology columns")
     ap.add_argument("--out", default="slide_list.csv")
+    ap.add_argument("--balanced", type=int, default=None,
+                    help="pick N slides per morphology (balanced subset)")
+    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     slides = pd.read_parquet(args.slides_parquet)
@@ -36,10 +40,22 @@ def main():
         morph[["record", "morphology"]],
         on="record", how="inner",
     )
-    merged = merged[["record", "path", "morphology"]]
+    merged = merged[["record", "path", "morphology", "slide_name"]]
     merged.to_csv(args.out, index=False)
     print(f"wrote {len(merged)} slides -> {args.out}")
     print(f"  morphology counts:\n{merged['morphology'].value_counts().to_string()}")
+
+    if args.balanced:
+        # pick N slides per morphology, output comma-separated slide_names
+        parts = []
+        for morph_val, group in merged.groupby("morphology"):
+            n = min(args.balanced, len(group))
+            parts.append(group.sample(n=n, random_state=args.seed)["slide_name"].tolist())
+        all_slides = [s for part in parts for s in part]
+        balanced_csv = args.out.replace(".csv", "_balanced.csv")
+        pd.DataFrame({"slide_name": all_slides}).to_csv(balanced_csv, index=False)
+        print(f"wrote {len(all_slides)} balanced slides -> {balanced_csv}")
+        print(f"  --slides {','.join(all_slides)}")
 
 
 if __name__ == "__main__":
