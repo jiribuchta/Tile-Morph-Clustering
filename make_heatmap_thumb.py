@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import tifffile
+import openslide
 from PIL import Image
 
 
@@ -64,16 +64,19 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
         print(f"  [skip] WSI not found in {slide_dir}")
         return
 
-    # Read lowest pyramid level with tifffile (no full image load)
-    # Find a level that gives ~2000px wide
-    with tifffile.TiffFile(wsi_path) as tf:
-        h0, w0 = tf.pages[0].shape[0], tf.pages[0].shape[1]
-        import math
-        target_w = 2000
-        level = max(0, int(math.log2(w0 / target_w)))
-        level = min(level, len(tf.pages) - 1)
-        data = tf.pages[level].array
-    img = Image.fromarray(data[:, :, :3] if data.ndim == 3 else data)
+    # Read at ~2000px wide using OpenSlide
+    slide = openslide.OpenSlide(str(wsi_path))
+    w, h = slide.dimensions
+    target_w = 2000
+    # OpenSlide mpp for level 0 is typically 0.5; we just pick a downscale factor
+    import math
+    downscale = max(1, int(math.log2(w / target_w)))
+    # Read at the right level
+    level = 0
+    while level + 1 < len(slide.magnifications) and w >> (level + 1) > target_w:
+        level += 1
+    img = slide.read_region((0, 0), level, (w >> level, h >> level))
+    slide.close()
 
     # Scale heatmap to match image size
     hm_img = Image.fromarray(hm)
