@@ -69,15 +69,19 @@ def main():
     all_embs = []
     all_names = []
     t0 = time.monotonic()
-    for pt_file in tqdm(pt_files, desc="loading", unit="file"):
+    for pi, pt_file in enumerate(tqdm(pt_files, desc="loading", unit="file")):
         slide_name = pt_file.stem
-        emb = torch.load(pt_file, map_location="cpu", weights_only=True)
+        if pi == 0:
+            print(f"  Loading first file: {pt_file.name} ({pt_file.stat().st_size / 1e6:.0f} MB)", flush=True)
+        emb = torch.load(pt_file, map_location="cpu", weights_only=False)
         if isinstance(emb, dict):
             for k in ("embeddings", "embedding", "emb", "features"):
                 if k in emb:
                     emb = emb[k]
                     break
         emb = emb.numpy().astype(np.float32)
+        if pi == 0:
+            print(f"  First file loaded: {emb.shape}", flush=True)
 
         # Filter to carcinoma tiles if --tiles provided
         if tiles_df is not None:
