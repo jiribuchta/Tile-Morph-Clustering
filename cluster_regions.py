@@ -136,9 +136,12 @@ def main():
     print(f"  {len(regions)} slides, {n_tiles} carcinoma tiles, {n_regions} regions")
     if args.slides:
         keep = set(args.slides.split(","))
+        all_names = sorted(v["name"] for v in regions.values())
         regions = {k: v for k, v in regions.items() if v["name"] in keep}
         if not regions:
-            raise SystemExit(f"none of {args.slides} found in regions")
+            print(f"  none of {args.slides} found in regions")
+            print(f"  sample slide_names: {all_names[:5]}")
+            raise SystemExit(1)
         print(f"  filtered to {len(regions)} slide(s): {sorted(v['name'] for v in regions.values())}")
 
     # slide_id -> morphology (via slide_name in the tiles CSV)
