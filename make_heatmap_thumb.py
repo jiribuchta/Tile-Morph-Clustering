@@ -44,14 +44,16 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     alpha = (grid > 0).astype(np.uint8) * 150  # semi-transparent
 
     # Load WSI at a low pyramid level
-    wsi_path = Path(wsi_root) / slide_name / f"{slide_name}.tiff"
+    # Path structure: <root>/year/NN/NNN/slide_name/slide_name.tiff
+    # e.g. 2020_00479-01-T -> 2020/00/479/2020_00479-01-T/2020_00479-01-T.tiff
+    parts = slide_name.split("-")
+    year = parts[0][:4]
+    nn = parts[0][4:6]
+    nnn = parts[0][6:9]
+    wsi_path = Path(wsi_root) / year / nn / nnn / slide_name / f"{slide_name}.tiff"
     if not wsi_path.exists():
-        # Try without extension
-        candidates = list(Path(wsi_root).glob(f"**/{slide_name}*.tiff"))
-        if not candidates:
-            print(f"  [skip] WSI not found: {wsi_path}")
-            return
-        wsi_path = candidates[0]
+        print(f"  [skip] WSI not found: {wsi_path}")
+        return
 
     # Open at lowest resolution (highest pyramid level)
     img = Image.open(wsi_path)
