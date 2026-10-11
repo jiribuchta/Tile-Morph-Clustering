@@ -10,13 +10,13 @@ submit_job(
     username="jiribuchta",
     image="cerit.io/rationai/base:2.0.6",
     cpu=8,
-    memory="32Gi",
+    memory="64Gi",
     public=False,
     script=[
         "git clone https://github.com/jiribuchta/Tile-Morph-Clustering.git workdir",
         "cd workdir",
         "uv sync",
-        f"uv run python -u cluster_tiles.py --pt-dir '{PT_DIR}' --tiles {TILES} --morphology {MORPH} --ks 2,4,8,16,32 --max-tiles 2000000 --out {OUT}",
+        f"uv run python -u cluster_tiles.py --pt-dir '{PT_DIR}' --tiles {TILES} --morphology {MORPH} --ks 2,4,8,16,32 --max-tiles 500000 --out {OUT}",
     ],
     storage=[storage.secure.DATA, storage.secure.PROJECTS, storage.secure.BIOPTIC_TREE],
 )
