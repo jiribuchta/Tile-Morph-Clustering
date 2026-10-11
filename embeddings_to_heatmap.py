@@ -128,17 +128,37 @@ def main():
     else:
         target_slides = None
 
-    # Index which parquet parts contain which slides
+    # Index which parquet parts contain which slides (fast: only reads slide_id column)
     tiles_dir = Path(args.embeddings) / "tiles" if (Path(args.embeddings) / "tiles").is_dir() else Path(args.embeddings)
-    parts = sorted(tiles_dir.glob("*.parquet"))
-    print(f"{len(parts)} tile parquet files")
+    all_parts = sorted(tiles_dir.glob("*.parquet"))
+    print(f"{len(all_parts)} tile parquet files")
 
-    # Stream through parquets, compute scores, write CSV
+    if target_slides is not None:
+        # Scan parts to find which contain target slide_ids
+        part_to_ids: dict[str, set] = {}
+        t0 = time.monotonic()
+        for p in all_parts:
+            pf = pq.ParquetFile(str(p))
+            for batch in pf.iter_batches(columns=["slide_id"], batch_size=65536):
+                for sid in batch.column("slide_id").to_numpy(zero_copy_only=False):
+                    h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
+                    if h in target_slides:
+                        part_to_ids.setdefault(str(p), set()).add(h)
+        target_parts = [p for p in all_parts if str(p) in part_to_ids]
+        found_ids = set().union(*part_to_ids.values()) if part_to_ids else set()
+        missing = target_slides - found_ids
+        if missing:
+            print(f"  [warn] {len(missing)} target slides not found in embeddings, e.g. {list(missing)[:5]}")
+        print(f"  scan done: {len(target_parts)} parts contain {len(found_ids)} target slides ({time.monotonic()-t0:.1f}s)")
+    else:
+        target_parts = all_parts
+
+    # Stream through target parquets, compute scores, write CSV
     n_rows = 0
     t0 = time.monotonic()
     with open(args.out, "w", newline="") as f:
         f.write("slide_name,x,y,value\n")
-        for pi, part in enumerate(parts):
+        for pi, part in enumerate(target_parts):
             pf = pq.ParquetFile(str(part))
             for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=4096):
                 sids = batch.column("slide_id").to_numpy(zero_copy_only=False)
@@ -180,7 +200,7 @@ def main():
                     n_rows += int(mask.sum())
 
             if (pi + 1) % 10 == 0:
-                print(f"  {pi+1}/{len(parts)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
+                print(f"  {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
 
     print(f"wrote {n_rows} rows -> {args.out} ({time.monotonic()-t0:.0f}s)")
 
