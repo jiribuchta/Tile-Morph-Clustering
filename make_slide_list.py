@@ -16,6 +16,7 @@ def main():
 
     slides = pd.read_parquet(args.slides_parquet)
     morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig", sep=";", engine="python", on_bad_lines="skip")
+    morph["morphology"] = morph["morphology"].str.replace(" ", "", regex=False)
 
     # extract slide name from path, strip -NN-X suffix to match morphology record
     slides = slides.copy()
