@@ -17,12 +17,16 @@ def main():
     slides = pd.read_parquet(args.slides_parquet)
     morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig", sep=";", engine="python", on_bad_lines="skip")
 
-    # join on id == record
-    print(f"  slides.id samples: {slides['id'].head(3).tolist()}")
+    # extract slide name from path (parent dir name = slide name)
+    slides = slides.copy()
+    slides["record"] = slides["path"].apply(
+        lambda p: p.rstrip("/").split("/")[-2] if "/" in p else p
+    )
+    print(f"  slides.record samples: {slides['record'].head(3).tolist()}")
     print(f"  morph.record samples: {morph['record'].head(3).tolist()}")
-    merged = slides[["id", "path"]].merge(
+    merged = slides[["record", "path"]].merge(
         morph[["record", "morphology"]],
-        left_on="id", right_on="record", how="inner",
+        on="record", how="inner",
     )
     merged = merged[["record", "path", "morphology"]]
     merged.to_csv(args.out, index=False)
