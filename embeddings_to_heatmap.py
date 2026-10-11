@@ -155,6 +155,7 @@ def main():
 
     # Stream through target parquets, compute scores, write CSV
     n_rows = 0
+    n_target_total = 0
     t0 = time.monotonic()
     with open(args.out, "w", newline="") as f:
         f.write("slide_name,x,y,value\n")
@@ -186,6 +187,7 @@ def main():
 
                 mask = (scores >= args.min_value) & mask_target
                 n_target = int(mask_target.sum()) if target_slides is not None else n
+                n_target_total += n_target
                 if n_target > 0 and not hasattr(main, '_debugged'):
                     main._debugged = True
                     print(f"  [debug] first batch with target: {n_target}/{n} tiles")
@@ -202,6 +204,8 @@ def main():
             if (pi + 1) % 10 == 0:
                 print(f"  {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
 
+    if target_slides is not None:
+        print(f"total target tiles: {n_target_total}")
     print(f"wrote {n_rows} rows -> {args.out} ({time.monotonic()-t0:.0f}s)")
 
 
