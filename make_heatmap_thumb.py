@@ -46,10 +46,11 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     # Load WSI at a low pyramid level
     # Path structure: <root>/year/NN/NNN/slide_name/slide_name.tiff
     # e.g. 2020_00479-01-T -> 2020/00/479/2020_00479-01-T/2020_00479-01-T.tiff
-    parts = slide_name.split("-")
-    year = parts[0][:4]
-    nn = parts[0][4:6]
-    nnn = parts[0][6:9]
+    # 2020_00479-01-T -> year=2020, nn=00, nnn=479
+    record = slide_name.split("-")[0]  # 2020_00479
+    year = record[:4]    # 2020
+    nn = record[5:7]     # 00
+    nnn = record[7:10]   # 479
     wsi_path = Path(wsi_root) / year / nn / nnn / slide_name / f"{slide_name}.tiff"
     if not wsi_path.exists():
         print(f"  [skip] WSI not found: {wsi_path}")
