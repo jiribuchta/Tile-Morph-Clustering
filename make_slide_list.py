@@ -46,7 +46,8 @@ def main():
     print(f"  morphology counts:\n{merged['morphology'].value_counts().to_string()}")
 
     if args.balanced:
-        # pick N slides per morphology, output comma-separated slide_names
+        # pick N slides per morphology (8500, 8520 only), output comma-separated
+        merged = merged[merged["morphology"].isin(["8500", "8520"])]
         parts = []
         for morph_val, group in merged.groupby("morphology"):
             n = min(args.balanced, len(group))
