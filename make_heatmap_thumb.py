@@ -68,14 +68,15 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     slide = openslide.OpenSlide(str(wsi_path))
     w, h = slide.dimensions
     target_w = 2000
-    # OpenSlide mpp for level 0 is typically 0.5; we just pick a downscale factor
-    import math
-    downscale = max(1, int(math.log2(w / target_w)))
-    # Read at the right level
+    # Find the level closest to target_w
     level = 0
-    while level + 1 < len(slide.magnifications) and w >> (level + 1) > target_w:
-        level += 1
-    img = slide.read_region((0, 0), level, (w >> level, h >> level))
+    for i, (lw, lh) in enumerate(slide.level_dimensions):
+        if lw <= target_w:
+            level = i
+            break
+        level = i
+    lw, lh = slide.level_dimensions[level]
+    img = slide.read_region((0, 0), level, (lw, lh))
     slide.close()
 
     # Scale heatmap to match image size
