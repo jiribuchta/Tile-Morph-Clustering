@@ -136,10 +136,10 @@ def main():
     print(f"  {len(regions)} slides, {n_tiles} carcinoma tiles, {n_regions} regions")
     if args.slides:
         keep = set(args.slides.split(","))
-        regions = {k: v for k, v in regions.items() if k in keep}
+        regions = {k: v for k, v in regions.items() if v["name"] in keep}
         if not regions:
             raise SystemExit(f"none of {args.slides} found in regions")
-        print(f"  filtered to {len(regions)} slide(s): {sorted(regions)}")
+        print(f"  filtered to {len(regions)} slide(s): {sorted(v['name'] for v in regions.values())}")
 
     # slide_id -> morphology (via slide_name in the tiles CSV)
     morph_by_sid: dict[str, str] = {}
