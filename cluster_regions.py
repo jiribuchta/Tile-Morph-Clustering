@@ -259,13 +259,13 @@ def main():
             continue
         # WSI path from slide name: YYYY_MMDDD-suffix -> root/YYYY/MMDDD/name/name.mrxs
         year, month, day = name[:4], name[5:7], name[7:10]
-        wsi_path = Path(args.wsi_root) / year / month / day / name / f"{name}.mrxs"
-        if not wsi_path.exists():
+        wsi_p = Path(args.wsi_root) / year / month / day / name / f"{name}.mrxs"
+        if not wsi_p.exists():
             n_fail += 1
-            print(f"  FAIL {name}: WSI not found at {wsi_path}")
+            print(f"  FAIL {name}: WSI not found at {wsi_p}")
             continue
         # open WSI, get level-0 and level-1 (tile grid) dimensions
-        s = openslide.OpenSlide(str(wsi_path))
+        s = openslide.OpenSlide(str(wsi_p))
         l0 = s.level_dimensions[0]
         # level-1 = tile grid: H*112 x W*112
         H, W = g.shape
