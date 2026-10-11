@@ -17,14 +17,16 @@ def main():
     slides = pd.read_parquet(args.slides_parquet)
     morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig", sep=";", engine="python", on_bad_lines="skip")
 
-    # extract slide name from path (parent dir name = slide name)
+    # extract slide name from path, strip -NN-X suffix to match morphology record
     slides = slides.copy()
-    slides["record"] = slides["path"].apply(
+    slides["slide_name"] = slides["path"].apply(
         lambda p: p.rstrip("/").split("/")[-2] if "/" in p else p
     )
+    # 2020_00397-01-N -> 2020_00397
+    slides["record"] = slides["slide_name"].apply(lambda s: s.rsplit("-", 1)[0] if "-" in s else s)
     print(f"  slides.record samples: {slides['record'].head(3).tolist()}")
     print(f"  morph.record samples: {morph['record'].head(3).tolist()}")
-    merged = slides[["record", "path"]].merge(
+    merged = slides[["record", "path", "slide_name"]].merge(
         morph[["record", "morphology"]],
         on="record", how="inner",
     )
