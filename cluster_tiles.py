@@ -61,6 +61,11 @@ def main():
         pt_files = [p for p in pt_files if p.stem in target_names]
     print(f"Loading {len(pt_files)} .pt files...")
 
+    # Subsample per-slide during loading to bound memory
+    n_slides = len(pt_files)
+    per_slide_max = args.max_tiles // n_slides if n_slides > 0 else args.max_tiles
+    print(f"  Per-slide cap: {per_slide_max} tiles (total max: {args.max_tiles})")
+
     all_embs = []
     all_names = []
     t0 = time.monotonic()
@@ -72,34 +77,30 @@ def main():
                 if k in emb:
                     emb = emb[k]
                     break
-        emb = emb.numpy().astype(np.float16)  # save memory
+        emb = emb.numpy().astype(np.float32)
 
         # Filter to carcinoma tiles if --tiles provided
         if tiles_df is not None:
             slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
             if slide_tiles.empty:
                 continue
-            # Can't spatially filter without coords in .pt — use count match
-            # Keep only as many tiles as are in the filter
             n_keep = min(emb.shape[0], len(slide_tiles))
             emb = emb[:n_keep]
             if emb.shape[0] == 0:
                 continue
 
+        # Subsample per-slide
+        if emb.shape[0] > per_slide_max:
+            idx = np.random.choice(emb.shape[0], per_slide_max, replace=False)
+            emb = emb[idx]
+
         all_embs.append(emb)
         all_names.extend([slide_name] * emb.shape[0])
 
-    X = np.vstack(all_embs).astype(np.float32)
+    X = np.vstack(all_embs)
     names = np.array(all_names)
     print(f"Loaded: {X.shape[0]} tiles, dim {X.shape[1]} ({time.monotonic()-t0:.0f}s)")
-    print(f"  RAM estimate: {X.nbytes / 1e9:.1f} GB")
-
-    # Subsample if needed
-    if X.shape[0] > args.max_tiles:
-        idx = np.random.choice(X.shape[0], args.max_tiles, replace=False)
-        X = X[idx]
-        names = names[idx]
-        print(f"Subsampled to {X.shape[0]} tiles")
+    print(f"  RAM: {X.nbytes / 1e9:.1f} GB")
 
     # L2 normalize
     norms = np.linalg.norm(X, axis=1, keepdims=True)
