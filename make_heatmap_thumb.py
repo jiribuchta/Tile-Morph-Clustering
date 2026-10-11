@@ -80,12 +80,26 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     slide.close()
 
     # Scale heatmap to match image size
-    hm_img = Image.fromarray(hm)
-    hm_img = hm_img.resize(img.size, Image.NEAREST)
-
-    # Create alpha channel
-    alpha_img = Image.fromarray(alpha)
-    alpha_img = alpha_img.resize(img.size, Image.NEAREST)
+    # Tile coords are in level-1 pixel space; display image is full WSI at `level`
+    # Scale: display_size / full_WSI_size_at_level1
+    # Full WSI at level 0 is (w, h); at level 1 it's (w/2, h/2)
+    # Display is (lw, lh) = (w >> level, h >> level)
+    # So scale from level-1 coords to display: lw / (w/2) = lw*2/w
+    scale = lw / (w / 2)  # level-1 to display scale
+    hm_w = int(max_x * scale)
+    hm_h = int(max_y * scale)
+    # Create full-size canvas and paste scaled heatmap
+    hm_full = np.zeros((hm_h, hm_w, 3), dtype=np.uint8)
+    alpha_full = np.zeros((hm_h, hm_w), dtype=np.uint8)
+    hm_small_img = Image.fromarray(hm)
+    hm_small_img = hm_small_img.resize((hm_w, hm_h), Image.NEAREST)
+    alpha_small_img = Image.fromarray(alpha)
+    alpha_small_img = alpha_small_img.resize((hm_w, hm_h), Image.NEAREST)
+    hm_full = np.array(hm_small_img)
+    alpha_full = np.array(alpha_small_img)
+    # Now resize full canvas to display size
+    hm_img = Image.fromarray(hm_full).resize(img.size, Image.NEAREST)
+    alpha_img = Image.fromarray(alpha_full).resize(img.size, Image.NEAREST)
 
     # Composite: WSI + red overlay
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
