@@ -196,6 +196,8 @@ def main():
                 mask = (scores >= args.min_value) & mask_target
                 if pi == 0 and not hasattr(main, '_debugged'):
                     main._debugged = True
+                    n_target = int(mask_target.sum()) if target_slides is not None else n
+                    print(f"  [debug] tiles in this batch: {n}, target slides: {n_target}")
                     print(f"  [debug] W[:5]={W[0][:5]}, b={b[0]:.4f}")
                     print(f"  [debug] emb norms: mean={norms.mean():.4f}, min={norms.min():.4f}, max={norms.max():.4f}")
                     print(f"  [debug] normalized: score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
