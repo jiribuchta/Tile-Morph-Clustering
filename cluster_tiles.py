@@ -115,8 +115,7 @@ def main():
     # Load morphology
     morph_map = None
     if args.morphology:
-        morph_df = pd.read_csv(args.morphology, encoding="utf-8-sig", sep=";", engine="python", on_bad_lines="skip")
-        morph_df["morphology"] = morph_df["morphology"].str.replace(" ", "", regex=False)
+        morph_df = pd.read_csv(args.morphology)
         morph_map = dict(zip(morph_df["slide_name"], morph_df["morphology"]))
 
     # Sweep k
