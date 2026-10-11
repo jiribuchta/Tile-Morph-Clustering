@@ -36,11 +36,14 @@ def main():
     slides = slides[slides["suffix"].str.upper().str.startswith("T")]
     print(f"  {len(slides)} T (positive) slides")
 
-    merged = slides[["record", "path", "slide_name"]].merge(
+    slides["slide_id"] = slides["id"].apply(
+        lambda b: b.hex() if isinstance(b, (bytes, bytearray)) else str(b)
+    )
+    merged = slides[["record", "path", "slide_name", "slide_id"]].merge(
         morph[["record", "morphology"]],
         on="record", how="inner",
     )
-    merged = merged[["record", "path", "morphology", "slide_name"]]
+    merged = merged[["record", "path", "morphology", "slide_name", "slide_id"]]
     merged.to_csv(args.out, index=False)
     print(f"wrote {len(merged)} slides -> {args.out}")
     print(f"  morphology counts:\n{merged['morphology'].value_counts().to_string()}")

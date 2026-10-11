@@ -98,26 +98,20 @@ def main():
     W, b = load_head_weights(args.run)
     print(f"Head loaded: W={W.shape}, b={b.shape} ({time.monotonic()-t0:.1f}s)")
 
-    # Load slide list
+    # Load slide_id -> slide_name mapping + target set
+    id_to_name: dict[str, str] = {}
     if args.slides:
         slides_df = pd.read_csv(args.slides)
-        target_slides = set(slides_df["slide_name"])
-        print(f"Target: {len(target_slides)} slides")
+        if "slide_id" in slides_df.columns:
+            for _, row in slides_df.iterrows():
+                id_to_name[str(row["slide_id"])] = row["slide_name"]
+            target_slides = set(slides_df["slide_id"].astype(str))
+            print(f"Target: {len(target_slides)} slides (by slide_id)")
+        else:
+            target_slides = set(slides_df["slide_name"])
+            print(f"Target: {len(target_slides)} slides (by name, no slide_id col)")
     else:
         target_slides = None
-
-    # Load slide_id -> slide_name mapping from slides.parquet
-    slides_path = Path(args.embeddings) / "slides" / "slides.parquet"
-    id_to_name: dict[str, str] = {}
-    if slides_path.exists():
-        slides_df = pd.read_parquet(slides_path, columns=["id", "path"])
-        for _, row in slides_df.iterrows():
-            sid = row["id"]
-            h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
-            id_to_name[h] = Path(row["path"]).stem
-        print(f"Slide name mapping: {len(id_to_name)} slides")
-    else:
-        print(f"[warn] no slides.parquet at {slides_path}, using slide_id as name")
 
     # Index which parquet parts contain which slides
     tiles_dir = Path(args.embeddings) / "tiles" if (Path(args.embeddings) / "tiles").is_dir() else Path(args.embeddings)
