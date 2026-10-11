@@ -245,6 +245,10 @@ def main():
 
     # BigTIFF mask per slide: 0 = background, cluster c -> c+1 (xOpat-ready)
     cluster_by_key = {(m["slide_id"], m["region"]): c for m, c in zip(region_meta, labels)}
+    def wsi_path(name: str) -> str:
+        year, month, day = name[:4], name[5:7], name[7:10]
+        return str(Path(args.wsi_root) / year / month / day / name / f"{name}.mrxs")
+
     masks_dir = out / "masks"
     masks_dir.mkdir(exist_ok=True)
     n_masks = n_skip = n_fail = 0
