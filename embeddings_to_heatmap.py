@@ -171,12 +171,16 @@ def main():
                 # L2 normalize (same as cluster_regions.py)
                 norms = np.linalg.norm(emb, axis=1, keepdims=True)
                 norms[norms == 0] = 1
-                emb /= norms
+                emb_norm = emb / norms
 
                 # Run head: sigmoid(W @ emb.T + b)
-                logits = emb @ W.T + b  # (n, 1)
+                logits = emb_norm @ W.T + b  # (n, 1)
                 scores = 1.0 / (1.0 + np.exp(-logits))  # (n, 1)
                 scores = scores.ravel().astype(np.float32)
+
+                # Also try without normalization
+                logits_raw = emb @ W.T + b
+                scores_raw = (1.0 / (1.0 + np.exp(-logits_raw))).ravel().astype(np.float32)
 
                 # Get slide names
                 names = []
@@ -192,7 +196,10 @@ def main():
                 mask = (scores >= args.min_value) & mask_target
                 if pi == 0 and not hasattr(main, '_debugged'):
                     main._debugged = True
-                    print(f"  [debug] first batch: {n} tiles, score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
+                    print(f"  [debug] W[:5]={W[0][:5]}, b={b[0]:.4f}")
+                    print(f"  [debug] emb norms: mean={norms.mean():.4f}, min={norms.min():.4f}, max={norms.max():.4f}")
+                    print(f"  [debug] normalized: score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
+                    print(f"  [debug] raw (no norm): score range [{scores_raw.min():.4f}, {scores_raw.max():.4f}], mean {scores_raw.mean():.4f}")
                 if mask.any():
                     pd.DataFrame({
                         "slide_name": [names[i] for i in np.where(mask)[0]],
