@@ -53,6 +53,8 @@ def load_regions(tiles_csv, min_value, min_region):
         ys = np.array([t[2] for t in tiles], dtype=np.int32)
         cols, rows = xs // 112, ys // 112
         H, W = rows.max() + 1, cols.max() + 1
+        x_off = int(xs.min()) % 112  # tiling origin offset in level-1 pixels
+        y_off = int(ys.min()) % 112
         mask = np.zeros((H, W), dtype=bool)
         mask[rows, cols] = True
         xs2d = np.zeros((H, W), dtype=np.int32)
@@ -74,7 +76,7 @@ def load_regions(tiles_csv, min_value, min_region):
         for rid in keep:
             m = lab == rid
             regions.append((int(m.sum()), float(xs2d[m].mean()), float(ys2d[m].mean())))
-        out[sid] = {"encs": encs, "labels": labels, "regions": regions, "grid": grid, "name": names[sid]}
+        out[sid] = {"encs": encs, "labels": labels, "regions": regions, "grid": grid, "name": names[sid], "x_off": x_off, "y_off": y_off}
     return out
 
 
@@ -268,13 +270,13 @@ def main():
             n_fail += 1
             print(f"  FAIL {name}: WSI not found at {wsi_p}")
             continue
-        # open WSI, get level-0 and level-1 (tile grid) dimensions
+        # open WSI, get level-0 and level-1 dimensions
         s = openslide.OpenSlide(str(wsi_p))
         l0 = s.level_dimensions[0]
-        # level-1 = tile grid: H*112 x W*112
+        l1 = s.level_dimensions[1]  # actual level-1 size
         H, W = g.shape
-        lref = (W * 112, H * 112)
-        sx, sy = l0[0] / lref[0], l0[1] / lref[1]
+        # scale: level-1 pixel -> level-0 pixel
+        sx, sy = l0[0] / l1[0], l0[1] / l1[1]
         mpp_x = float(s.properties["openslide.mpp-x"])
         mpp_y = float(s.properties["openslide.mpp-y"])
         s.close()
@@ -290,8 +292,8 @@ def main():
                 label = lut[g[row, col]]
                 if label == 0:
                     continue
-                x0 = int(round(col * 112 * sx))
-                y0 = int(round(row * 112 * sy))
+                x0 = int(round((col * 112 + r["x_off"]) * sx))
+                y0 = int(round((row * 112 + r["y_off"]) * sy))
                 x1 = min(l0[0], x0 + int(round(112 * sx)))
                 y1 = min(l0[1], y0 + int(round(112 * sy)))
                 if x1 > x0 and y1 > y0:
