@@ -67,22 +67,12 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     # Read lowest pyramid level with tifffile (no full image load)
     # Find a level that gives ~2000px wide
     with tifffile.TiffFile(wsi_path) as tf:
-        # Pyramid levels: shape decreases by 2x each level
-        # Read level 0 shape to compute target level
-        h0, w0 = tf.shape[0], tf.shape[1]
+        h0, w0 = tf.pages[0].shape[0], tf.pages[0].shape[1]
         import math
         target_w = 2000
         level = max(0, int(math.log2(w0 / target_w)))
-        # Read at that level
-        data = tf.data  # this reads level 0 by default
-        # For pyramid TIFFs, we need to read specific pages
-        # tifffile reads all pages; for large images use page index
-        # Each pyramid level is a separate page in the TIFF
-        # Page 0 = level 0, page 1 = level 1, etc.
-        if level < len(tf.pages):
-            data = tf.pages[level].array
-        else:
-            data = tf.pages[-1].array
+        level = min(level, len(tf.pages) - 1)
+        data = tf.pages[level].array
     img = Image.fromarray(data[:, :, :3] if data.ndim == 3 else data)
 
     # Scale heatmap to match image size
