@@ -106,23 +106,23 @@ def main():
     else:
         target_slides = None
 
+    # Load slide_id -> slide_name mapping from slides.parquet
+    slides_path = Path(args.embeddings) / "slides" / "slides.parquet"
+    id_to_name: dict[str, str] = {}
+    if slides_path.exists():
+        slides_df = pd.read_parquet(slides_path, columns=["id", "path"])
+        for _, row in slides_df.iterrows():
+            sid = row["id"]
+            h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
+            id_to_name[h] = Path(row["path"]).stem
+        print(f"Slide name mapping: {len(id_to_name)} slides")
+    else:
+        print(f"[warn] no slides.parquet at {slides_path}, using slide_id as name")
+
     # Index which parquet parts contain which slides
     tiles_dir = Path(args.embeddings) / "tiles" if (Path(args.embeddings) / "tiles").is_dir() else Path(args.embeddings)
     parts = sorted(tiles_dir.glob("*.parquet"))
     print(f"{len(parts)} tile parquet files")
-
-    slide_to_part: dict[str, str] = {}
-    for p in parts:
-        pf = pq.ParquetFile(str(p))
-        for batch in pf.iter_batches(columns=["slide_id"], batch_size=65536):
-            for sid in batch.column("slide_id").to_numpy(zero_copy_only=False):
-                h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
-                slide_to_part.setdefault(h, str(p))
-
-    if target_slides:
-        # Map slide_name -> slide_id isn't direct; we'll filter by checking all slides
-        # and just process all, filtering at write time
-        pass
 
     # Stream through parquets, compute scores, write CSV
     n_rows = 0
@@ -153,16 +153,14 @@ def main():
                 names = []
                 for sid in sids:
                     h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
-                    # slide_name is the stem of the path; we don't have path here
-                    # Use slide_id as proxy, or look up from slides CSV
-                    names.append(h)
+                    names.append(id_to_name.get(h, h))
 
                 if target_slides is not None:
-                    # Filter: we need slide_name, not slide_id
-                    # For now, write all and let the user filter
-                    pass
+                    mask_target = np.array([n in target_slides for n in names])
+                else:
+                    mask_target = np.ones(n, dtype=bool)
 
-                mask = scores >= args.min_value
+                mask = (scores >= args.min_value) & mask_target
                 if mask.any():
                     pd.DataFrame({
                         "slide_name": [names[i] for i in np.where(mask)[0]],
