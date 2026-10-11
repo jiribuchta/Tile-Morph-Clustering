@@ -27,6 +27,11 @@ def main():
     slides["record"] = slides["slide_name"].apply(lambda s: s.split("-")[0] if "-" in s else s)
     print(f"  slides.record samples: {slides['record'].head(3).tolist()}")
     print(f"  morph.record samples: {morph['record'].head(3).tolist()}")
+    # keep only T (tumor/positive) samples: suffix after last dash
+    slides["suffix"] = slides["slide_name"].apply(lambda s: s.rsplit("-", 1)[-1] if "-" in s else "")
+    slides = slides[slides["suffix"].str.upper().str.startswith("T")]
+    print(f"  {len(slides)} T (positive) slides")
+
     merged = slides[["record", "path", "slide_name"]].merge(
         morph[["record", "morphology"]],
         on="record", how="inner",
