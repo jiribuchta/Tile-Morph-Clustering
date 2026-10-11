@@ -115,7 +115,9 @@ def process_pt_files(pt_dir: Path, target_names: set | None, W: np.ndarray, b: n
         f.write("slide_name,x,y,value\n")
         for pi, pt_file in enumerate(pt_files):
             slide_name = pt_file.stem
-            data = torch.load(pt_file, map_location="cpu", weights_only=False)
+            if pi % 5 == 0:
+                print(f"  {pi+1}/{len(pt_files)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
+            data = torch.load(pt_file, map_location="cpu", weights_only=True)
 
             # Handle different formats
             if isinstance(data, dict):
