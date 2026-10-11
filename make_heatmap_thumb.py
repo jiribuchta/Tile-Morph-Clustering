@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None  # WSI images are huge
 
 
 def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
