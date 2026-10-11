@@ -36,13 +36,23 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
     )
     # Look for the specific checkpoint: epoch=0-step=16816
     art = Path(artifact_dir)
-    # MLflow lightning checkpoints are typically: checkpoints/epoch=0-step=16816.ckpt
-    specific = list(art.glob("**/epoch=0-step=16816*"))
-    if specific:
-        ckpt = specific[0]
+    # Could be a file or a directory containing the checkpoint
+    specific_dirs = list(art.glob("**/epoch=0-step=16816"))
+    specific_files = list(art.glob("**/epoch=0-step=16816.*"))
+    if specific_files:
+        ckpt = specific_files[0]
+    elif specific_dirs:
+        # Directory: find the .ckpt file inside
+        inner = list(specific_dirs[0].glob("*.ckpt")) + list(specific_dirs[0].glob("*.pt"))
+        if not inner:
+            print(f"Contents of {specific_dirs[0]}:")
+            for f in specific_dirs[0].iterdir():
+                print(f"  {f.name}")
+            raise SystemExit("No checkpoint file inside directory")
+        ckpt = inner[0]
     else:
-        # Fallback: any checkpoint
-        candidates = list(art.glob("**/*.pt")) + list(art.glob("**/*.ckpt")) + list(art.glob("**/*.pth"))
+        # Fallback: any checkpoint file
+        candidates = [f for f in art.rglob("*") if f.suffix in (".ckpt", ".pt", ".pth")]
         if not candidates:
             print(f"Available artifacts:")
             for f in sorted(art.rglob("*")):
