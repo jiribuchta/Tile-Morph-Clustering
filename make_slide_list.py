@@ -16,6 +16,7 @@ def main():
 
     slides = pd.read_parquet(args.slides_parquet)
     morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig", engine="python", on_bad_lines="skip")
+    print(f"morphology CSV columns: {list(morph.columns)}")
 
     # join on id == record
     merged = slides[["id", "path"]].merge(
