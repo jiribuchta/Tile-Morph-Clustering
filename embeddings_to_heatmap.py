@@ -3,7 +3,14 @@
 Downloads the trained linear head from MLflow, runs it on tile embeddings,
 and writes a CSV: slide_name, x, y, value.
 
-Usage:
+Usage (per-slide .pt files — preferred):
+    python embeddings_to_heatmap.py \
+        --pt-dir "/mnt/.../tile_embeddings/virchow2/MMCI B20-24 Val" \
+        --slides slide_list.csv \
+        --out heatmaps_tiles.csv \
+        --min-value 0.5
+
+Usage (sharded parquets):
     python embeddings_to_heatmap.py \
         --embeddings "/path/to/Virchow2" \
         --slides slide_list.csv \
@@ -19,6 +26,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import torch
 
 TRACKING_URI = "http://mlflow.rationai-mlflow:5000"
 # Virchow2 (Frozen) selected model from BRC-A-29
@@ -34,15 +42,13 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
     artifact_dir = mlflow.artifacts.download_artifacts(
         f"mlflow-artifacts:/61/{run_id}/artifacts"
     )
-    # Look for the specific checkpoint: epoch=0-step=16816
     art = Path(artifact_dir)
-    # Could be a file or a directory containing the checkpoint
+    # Look for the specific checkpoint: epoch=0-step=16816
     specific_dirs = list(art.glob("**/epoch=0-step=16816"))
     specific_files = list(art.glob("**/epoch=0-step=16816.*"))
     if specific_files:
         ckpt = specific_files[0]
     elif specific_dirs:
-        # Directory: find the .ckpt file inside
         inner = list(specific_dirs[0].glob("*.ckpt")) + list(specific_dirs[0].glob("*.pt"))
         if not inner:
             print(f"Contents of {specific_dirs[0]}:")
@@ -51,7 +57,6 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
             raise SystemExit("No checkpoint file inside directory")
         ckpt = inner[0]
     else:
-        # Fallback: any checkpoint file
         candidates = [f for f in art.rglob("*") if f.suffix in (".ckpt", ".pt", ".pth")]
         if not candidates:
             print(f"Available artifacts:")
@@ -63,33 +68,28 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
         print(f"[warn] specific checkpoint not found, using: {ckpt}")
     print(f"Loading checkpoint: {ckpt}")
 
-    import torch
     sd = torch.load(ckpt, map_location="cpu", weights_only=False)
 
-    # Extract the linear head weights
-    # The model has a backbone + a linear classifier head
-    # Look for the last linear layer weights
     if isinstance(sd, dict):
-        # Lightning checkpoint: sd["state_dict"]
         if "state_dict" in sd:
             sd = sd["state_dict"]
-        # Find the classifier head keys
         head_keys = {k: v for k, v in sd.items() if "classifier" in k.lower() or "head" in k.lower() or "decode" in k.lower()}
         if not head_keys:
-            # Fallback: find any linear layer with in_features=2560
             head_keys = {k: v for k, v in sd.items() if v.shape == (1, 2560) or v.shape == (2560,)}
         if not head_keys:
             print("Available keys:")
             for k in sd.keys():
                 print(f"  {k}: {sd[k].shape}")
             raise SystemExit("Could not find classifier head weights")
+    else:
+        raise SystemExit(f"Unexpected checkpoint format: {type(sd)}")
 
     W = None
     b = None
     for k, v in head_keys.items():
         if v.shape == (1, 2560) or v.shape == (2560,):
             W = v.numpy().astype(np.float32).reshape(1, -1)
-        elif v.shape == (1,) or v.shape == (1,):
+        elif v.shape == (1,):
             b = v.numpy().astype(np.float32).reshape(1)
     if W is None:
         raise SystemExit(f"Could not extract W from head keys: {list(head_keys.keys())}")
@@ -98,43 +98,94 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
     return W, b
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--embeddings", required=True, help="sharded dir with tiles/*.parquet")
-    ap.add_argument("--slides", help="CSV with slide_name column (subset)")
-    ap.add_argument("--out", default="heatmaps_tiles.csv")
-    ap.add_argument("--min-value", type=float, default=0.5,
-                    help="only write tiles with value >= this")
-    ap.add_argument("--run", default=MODEL_RUN, help="MLflow run ID for model weights")
-    args = ap.parse_args()
+def process_pt_files(pt_dir: Path, target_names: set | None, W: np.ndarray, b: np.ndarray,
+                     min_value: float, out: str):
+    """Process per-slide .pt files."""
+    pt_files = sorted(pt_dir.glob("*.pt"))
+    print(f"{len(pt_files)} .pt files in {pt_dir}")
 
-    # Load head weights
+    if target_names is not None:
+        pt_files = [p for p in pt_files if p.stem in target_names]
+        print(f"  {len(pt_files)} match target slides")
+
+    n_rows = 0
+    n_tiles_total = 0
     t0 = time.monotonic()
-    W, b = load_head_weights(args.run)
-    print(f"Head loaded: W={W.shape}, b={b.shape} ({time.monotonic()-t0:.1f}s)")
+    with open(out, "w", newline="") as f:
+        f.write("slide_name,x,y,value\n")
+        for pi, pt_file in enumerate(pt_files):
+            slide_name = pt_file.stem
+            data = torch.load(pt_file, map_location="cpu", weights_only=False)
 
-    # Load slide_id -> slide_name mapping + target set
-    id_to_name: dict[str, str] = {}
-    if args.slides:
-        slides_df = pd.read_csv(args.slides)
-        if "slide_id" in slides_df.columns:
-            for _, row in slides_df.iterrows():
-                id_to_name[str(row["slide_id"])] = row["slide_name"]
-            target_slides = set(slides_df["slide_id"].astype(str))
-            print(f"Target: {len(target_slides)} slides (by slide_id)")
-        else:
-            target_slides = set(slides_df["slide_name"])
-            print(f"Target: {len(target_slides)} slides (by name, no slide_id col)")
-    else:
-        target_slides = None
+            # Handle different formats
+            if isinstance(data, dict):
+                emb = None
+                xs = None
+                ys = None
+                for k in ("embeddings", "embedding", "emb", "features"):
+                    if k in data:
+                        emb = data[k].numpy().astype(np.float32)
+                        break
+                for k in ("x", "xs", "x_coords"):
+                    if k in data:
+                        xs = data[k].numpy().astype(np.int32)
+                        break
+                for k in ("y", "ys", "y_coords"):
+                    if k in data:
+                        ys = data[k].numpy().astype(np.int32)
+                        break
+                if emb is None:
+                    if pi == 0:
+                        print(f"  [debug] keys in {pt_file.name}: {list(data.keys())}")
+                        for k, v in data.items():
+                            print(f"    {k}: {type(v).__name__}", getattr(v, 'shape', ''))
+                    raise SystemExit(f"Cannot find embeddings in {pt_file.name}")
+                if xs is None or ys is None:
+                    n = emb.shape[0]
+                    side = int(n ** 0.5)
+                    xs = np.tile(np.arange(side), n // side).astype(np.int32)
+                    ys = np.repeat(np.arange(n // side), side).astype(np.int32)
+                    print(f"  [warn] {pt_file.name}: no coords, generated {side}x{side} grid")
+            else:
+                emb = data.numpy().astype(np.float32)
+                n = emb.shape[0]
+                side = int(n ** 0.5)
+                xs = np.tile(np.arange(side), n // side).astype(np.int32)
+                ys = np.repeat(np.arange(n // side), side).astype(np.int32)
+                print(f"  [warn] {pt_file.name}: tensor only, generated {side}x{side} grid")
 
-    # Index which parquet parts contain which slides (fast: only reads slide_id column)
-    tiles_dir = Path(args.embeddings) / "tiles" if (Path(args.embeddings) / "tiles").is_dir() else Path(args.embeddings)
+            n = emb.shape[0]
+            n_tiles_total += n
+
+            # Run head: sigmoid(W @ emb + b) — no L2 norm
+            logits = emb @ W.T + b
+            scores = (1.0 / (1.0 + np.exp(-logits))).ravel().astype(np.float32)
+
+            if pi == 0:
+                print(f"  [debug] {slide_name}: {n} tiles, score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
+
+            mask = scores >= min_value
+            if mask.any():
+                pd.DataFrame({
+                    "slide_name": slide_name,
+                    "x": xs[mask],
+                    "y": ys[mask],
+                    "value": scores[mask],
+                }).to_csv(f, index=False, header=False)
+                n_rows += int(mask.sum())
+
+    print(f"total tiles: {n_tiles_total}")
+    print(f"wrote {n_rows} rows -> {out} ({time.monotonic()-t0:.0f}s)")
+
+
+def process_parquets(embed_dir: str, target_slides: set | None, id_to_name: dict,
+                     W: np.ndarray, b: np.ndarray, min_value: float, out: str):
+    """Process sharded parquet files."""
+    tiles_dir = Path(embed_dir) / "tiles" if (Path(embed_dir) / "tiles").is_dir() else Path(embed_dir)
     all_parts = sorted(tiles_dir.glob("*.parquet"))
     print(f"{len(all_parts)} tile parquet files")
 
     if target_slides is not None:
-        # Scan parts to find which contain target slide_ids
         part_to_ids: dict[str, set] = {}
         t0 = time.monotonic()
         for p in all_parts:
@@ -148,16 +199,15 @@ def main():
         found_ids = set().union(*part_to_ids.values()) if part_to_ids else set()
         missing = target_slides - found_ids
         if missing:
-            print(f"  [warn] {len(missing)} target slides not found in embeddings, e.g. {list(missing)[:5]}")
+            print(f"  [warn] {len(missing)} target slides not found, e.g. {list(missing)[:5]}")
         print(f"  scan done: {len(target_parts)} parts contain {len(found_ids)} target slides ({time.monotonic()-t0:.1f}s)")
     else:
         target_parts = all_parts
 
-    # Stream through target parquets, compute scores, write CSV
     n_rows = 0
     n_target_total = 0
     t0 = time.monotonic()
-    with open(args.out, "w", newline="") as f:
+    with open(out, "w", newline="") as f:
         f.write("slide_name,x,y,value\n")
         for pi, part in enumerate(target_parts):
             pf = pq.ParquetFile(str(part))
@@ -169,27 +219,24 @@ def main():
                 n = len(batch)
                 emb = emb.reshape(n, -1).astype(np.float32)
 
-                # Run head: sigmoid(W @ emb + b) — no L2 norm (head trained on raw embeddings)
-                logits = emb @ W.T + b  # (n, 1)
-                scores = 1.0 / (1.0 + np.exp(-logits))  # (n, 1)
-                scores = scores.ravel().astype(np.float32)
+                logits = emb @ W.T + b
+                scores = (1.0 / (1.0 + np.exp(-logits))).ravel().astype(np.float32)
 
-                # Get slide names
                 names = []
                 for sid in sids:
                     h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
                     names.append(id_to_name.get(h, h))
 
                 if target_slides is not None:
-                    mask_target = np.array([n in target_slides for n in names])
+                    mask_target = np.array([nm in target_slides for nm in names])
                 else:
                     mask_target = np.ones(n, dtype=bool)
 
-                mask = (scores >= args.min_value) & mask_target
-                n_target = int(mask_target.sum()) if target_slides is not None else n
+                mask = (scores >= min_value) & mask_target
+                n_target = int(mask_target.sum())
                 n_target_total += n_target
-                if n_target > 0 and not hasattr(main, '_debugged'):
-                    main._debugged = True
+                if n_target > 0 and not hasattr(process_parquets, '_debugged'):
+                    process_parquets._debugged = True
                     print(f"  [debug] first batch with target: {n_target}/{n} tiles")
                     print(f"  [debug] target score range [{scores[mask_target].min():.4f}, {scores[mask_target].max():.4f}], mean {scores[mask_target].mean():.4f}")
                 if mask.any():
@@ -206,7 +253,50 @@ def main():
 
     if target_slides is not None:
         print(f"total target tiles: {n_target_total}")
-    print(f"wrote {n_rows} rows -> {args.out} ({time.monotonic()-t0:.0f}s)")
+    print(f"wrote {n_rows} rows -> {out} ({time.monotonic()-t0:.0f}s)")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--embeddings", help="sharded dir with tiles/*.parquet")
+    ap.add_argument("--pt-dir", help="dir with per-slide .pt files (simpler)")
+    ap.add_argument("--slides", help="CSV with slide_name/slide_id column (subset)")
+    ap.add_argument("--out", default="heatmaps_tiles.csv")
+    ap.add_argument("--min-value", type=float, default=0.5,
+                    help="only write tiles with value >= this")
+    ap.add_argument("--run", default=MODEL_RUN, help="MLflow run ID for model weights")
+    args = ap.parse_args()
+
+    if not args.embeddings and not args.pt_dir:
+        raise SystemExit("--embeddings or --pt-dir required")
+
+    # Load head weights
+    t0 = time.monotonic()
+    W, b = load_head_weights(args.run)
+    print(f"Head loaded: W={W.shape}, b={b.shape} ({time.monotonic()-t0:.1f}s)")
+
+    # Load slide list
+    id_to_name: dict[str, str] = {}
+    target_slides = None
+    target_names = None
+    if args.slides:
+        slides_df = pd.read_csv(args.slides)
+        if "slide_id" in slides_df.columns:
+            for _, row in slides_df.iterrows():
+                id_to_name[str(row["slide_id"])] = row["slide_name"]
+            target_slides = set(slides_df["slide_id"].astype(str))
+            target_names = set(slides_df["slide_name"])
+            print(f"Target: {len(target_slides)} slides")
+        else:
+            target_slides = set(slides_df["slide_name"])
+            target_names = target_slides
+            print(f"Target: {len(target_slides)} slides (by name)")
+
+    # Dispatch
+    if args.pt_dir:
+        process_pt_files(Path(args.pt_dir), target_names, W, b, args.min_value, args.out)
+    else:
+        process_parquets(args.embeddings, target_slides, id_to_name, W, b, args.min_value, args.out)
 
 
 if __name__ == "__main__":
