@@ -1,0 +1,125 @@
+"""Create heatmap overlay thumbnails from tile scores CSV.
+
+Usage:
+    python make_heatmap_thumb.py \
+        --tiles heatmaps_tiles.csv \
+        --wsi-root /mnt/bioptic_tree \
+        --out thumbs/ \
+        --slides 2020_00479-01-T,2020_00397-02-T
+"""
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+
+def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
+              tile_size: int = 112, stride: int = 112):
+    """Create a JPEG thumbnail with heatmap overlay for one slide."""
+    # Load tiles for this slide
+    df = pd.read_csv(csv_path)
+    slide_tiles = df[df["slide_name"] == slide_name]
+    if slide_tiles.empty:
+        print(f"  [skip] no tiles for {slide_name}")
+        return
+
+    # Build 2D grid from tile coords
+    max_x = slide_tiles["x"].max() + tile_size
+    max_y = slide_tiles["y"].max() + tile_size
+    grid = np.zeros((max_y // stride + 1, max_x // stride + 1), dtype=np.float32)
+
+    for _, row in slide_tiles.iterrows():
+        gy = row["y"] // stride
+        gx = row["x"] // stride
+        if gy < grid.shape[0] and gx < grid.shape[1]:
+            grid[gy, gx] = max(grid[gy, gx], row["value"])
+
+    # Create heatmap image (red = high score)
+    hm = np.zeros((*grid.shape, 3), dtype=np.uint8)
+    hm[:, :, 2] = (grid * 255).astype(np.uint8)  # red channel
+    # Alpha: only show where score > 0
+    alpha = (grid > 0).astype(np.uint8) * 150  # semi-transparent
+
+    # Load WSI at a low pyramid level
+    wsi_path = Path(wsi_root) / slide_name / f"{slide_name}.tiff"
+    if not wsi_path.exists():
+        # Try without extension
+        candidates = list(Path(wsi_root).glob(f"**/{slide_name}*.tiff"))
+        if not candidates:
+            print(f"  [skip] WSI not found: {wsi_path}")
+            return
+        wsi_path = candidates[0]
+
+    # Open at lowest resolution (highest pyramid level)
+    img = Image.open(wsi_path)
+    # Get the smallest level
+    level = 0
+    while True:
+        try:
+            img.reduce(level + 1, (1, 1))
+            level += 1
+        except Exception:
+            break
+    # Use a level that gives ~2000px wide image
+    target_w = 2000
+    base_w = img.size[0]
+    # Find right level: each level halves
+    import math
+    level = max(0, int(math.log2(base_w / target_w)))
+    try:
+        img = img.reduce(level, (1, 1))
+    except Exception:
+        img = img.resize((target_w, int(img.size[1] * target_w / img.size[0])))
+
+    # Scale heatmap to match image size
+    hm_img = Image.fromarray(hm)
+    hm_img = hm_img.resize(img.size, Image.NEAREST)
+
+    # Create alpha channel
+    alpha_img = Image.fromarray(alpha)
+    alpha_img = alpha_img.resize(img.size, Image.NEAREST)
+
+    # Composite: WSI + red overlay
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    overlay.paste(hm_img, (0, 0), alpha_img)
+    result = Image.new("RGB", img.size)
+    result.paste(img.convert("RGB"), (0, 0))
+    # Blend
+    base = np.array(result, dtype=np.float32)
+    ov = np.array(overlay, dtype=np.float32)
+    a = ov[:, :, 3:4] / 255.0
+    blended = base * (1 - a) + ov[:, :, :3] * a
+    result = Image.fromarray(blended.astype(np.uint8))
+
+    out = Path(out_path) / f"{slide_name}.jpg"
+    result.save(out, quality=85)
+    print(f"  {out} ({result.size[0]}x{result.size[1]})")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tiles", required=True, help="heatmap CSV (slide_name,x,y,value)")
+    ap.add_argument("--wsi-root", required=True, help="root dir with WSI TIFFs")
+    ap.add_argument("--out", default="thumbs/", help="output dir for JPEGs")
+    ap.add_argument("--slides", help="comma-separated slide names (default: all in CSV)")
+    args = ap.parse_args()
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.slides:
+        slides = [s.strip() for s in args.slides.split(",")]
+    else:
+        df = pd.read_csv(args.tiles)
+        slides = df["slide_name"].unique().tolist()
+
+    print(f"{len(slides)} slides -> {out_dir}")
+    for s in slides:
+        make_thumb(args.tiles, s, args.wsi_root, str(out_dir))
+
+
+if __name__ == "__main__":
+    main()
