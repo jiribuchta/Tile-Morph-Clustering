@@ -10,10 +10,10 @@ Usage:
         --tiles heatmaps_tiles.csv \
         --morphology slide_morphology.csv \
         --embeddings "/path/to/MMCI B20-24 Train_sharded" \
-        --min-value 0.5 --min-region 8 --k 2
+        --min-value 0.5 --min-region 8 --k 32
 
 --embeddings: sharded dir with tiles/*.parquet (and slides/slides.parquet).
-Writes: regions.parquet, X_regions.npy, centroids.npy, summary.json
+Writes: X_regions.npy, region_meta.parquet, centroids.npy, regions.parquet, summary.json
 """
 import argparse
 import csv
@@ -22,10 +22,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-import openslide
 import pyarrow.parquet as pq
-import pyvips
-from ratiopath.masks import write_big_tiff
 from scipy import ndimage
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
@@ -107,8 +104,6 @@ def main():
     ap.add_argument("--data", default=None,
                     help="shared data dir (X_regions.npy, region_meta.parquet). "
                          "Default: same as --out.")
-    ap.add_argument("--wsi-root", default="/mnt/bioptic_tree",
-                    help="root of bioptic tree for WSI paths")
     ap.add_argument("--load-x", action="store_true",
                     help="load X_regions.npy + region_meta.parquet from --data, skip embedding collection")
     ap.add_argument("--slides", default=None,
@@ -156,7 +151,6 @@ def main():
     if args.load_x:
         print(f"loading cached X from {data} (--load-x)")
         X = np.load(data / "X_regions.npy")
-        # region_meta.parquet (new runs) or regions.parquet (older runs, same row order)
         if (data / "region_meta.parquet").exists():
             meta = pd.read_parquet(data / "region_meta.parquet")
         else:
@@ -256,67 +250,6 @@ def main():
     print(f"  inertia={km.inertia_:.1f}  silhouette(subsample)={sil:.3f}")
     np.save(out / "centroids.npy", km.cluster_centers_.astype(np.float32))
 
-    # BigTIFF mask per slide: 0 = background, cluster c -> c+1 (xOpat-ready)
-    cluster_by_key = {(m["slide_id"], m["region"]): c for m, c in zip(region_meta, labels)}
-    def wsi_path(name: str) -> str:
-        year, month, day = name[:4], name[5:7], name[7:10]
-        return str(Path(args.wsi_root) / year / month / day / name / f"{name}.mrxs")
-
-    masks_dir = out / "masks"
-    masks_dir.mkdir(exist_ok=True)
-    n_masks = n_skip = n_fail = 0
-    for sid, r in regions.items():
-        g = r["grid"]
-        if g.max() == 0:
-            continue
-        name = r["name"].replace("/", "_")
-        dest = masks_dir / f"{name}.tiff"
-        if dest.exists():
-            n_skip += 1
-            continue
-        # WSI path from slide name: YYYY_MMDDD-suffix -> root/YYYY/MMDDD/name/name.mrxs
-        year, month, day = name[:4], name[5:7], name[7:10]
-        wsi_p = Path(args.wsi_root) / year / month / day / name / f"{name}.mrxs"
-        if not wsi_p.exists():
-            n_fail += 1
-            print(f"  FAIL {name}: WSI not found at {wsi_p}")
-            continue
-        # open WSI, get level-0 and level-1 dimensions
-        s = openslide.OpenSlide(str(wsi_p))
-        l0 = s.level_dimensions[0]
-        l1 = s.level_dimensions[1]  # actual level-1 size
-        H, W = g.shape
-        # scale: level-1 pixel -> level-0 pixel
-        sx, sy = l0[0] / l1[0], l0[1] / l1[1]
-        mpp_x = float(s.properties["openslide.mpp-x"])
-        mpp_y = float(s.properties["openslide.mpp-y"])
-        s.close()
-        # paint tiles into level-0 array
-        arr = np.zeros((l0[1], l0[0]), dtype=np.uint8)
-        lut = np.zeros(g.max() + 1, dtype=np.uint8)
-        for i in range(1, len(r["regions"]) + 1):
-            c = cluster_by_key.get((sid, i))
-            if c is not None:
-                lut[i] = c + 1
-        for row in range(H):
-            for col in range(W):
-                label = lut[g[row, col]]
-                if label == 0:
-                    continue
-                x0 = int(round((col * 112 + r["x_off"]) * sx))
-                y0 = int(round((row * 112 + r["y_off"]) * sy))
-                x1 = min(l0[0], x0 + int(round(112 * sx)))
-                y1 = min(l0[1], y0 + int(round(112 * sy)))
-                if x1 > x0 and y1 > y0:
-                    arr[y0:y1, x0:x1] = label
-        # write BigTIFF with pyramid
-        img = pyvips.Image.new_from_array(arr)
-        write_big_tiff(img, dest, mpp_x, mpp_y)
-        del arr
-        n_masks += 1
-        print(f"  [{n_masks}] {dest.name} {l0[1]}x{l0[0]}")
-    print(f"  wrote {n_masks}, skipped {n_skip}, failed {n_fail} -> {masks_dir}")
-
     # per-slide majority cluster vs morphology
     df = pd.DataFrame(region_meta)
     df["cluster"] = labels
@@ -347,216 +280,6 @@ def main():
         "morphology_vs_cluster": ct.reset_index().to_dict("records"),
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
-
-    # report config (never fatal)
-    wsi_paths = [wsi_path(r["name"]) for r in regions.values() if r["grid"].max() > 0]
-    paths_block = "\n".join(f"    - {p}" for p in sorted(wsi_paths))
-    k = args.k
-    cfg = f"""# Report-tool config: TileMorph k={k} cluster masks over the MAMMAPRINT WSIs.
-#
-# This is a Hydra group file for the `report` tool (NOT this repo's Hydra).
-# Drop this file as  <config_dir>/reporter/tile_morph_k32.yaml  and run:
-#
-#     python -m report --config-dir report_conf reporter=tile_morph_k32 user=<you>
-#
-# (add  mlflow=kubas_external  if you run outside the Kubas cluster)
-#
-# The mask files are produced by this repo's `make_masks` (one .tiff per slide,
-# uint8 label image at WSI level-0 size, pixel value = cluster id + 1
-# (the +1 offset), 0 = background).
-# The mask file name (slide stem) is the join key to the WSI below.
-#
-# Adjust the two paths to match where `make_masks` wrote the masks and where
-# the WSIs are mounted for xOpat.
-
-defaults:
-  - _self_
-
-title: TileMorph clustering (k={k}) - MAMMAPRINT
-
-# --- background: the WSIs to display (MIRAX .mrxs) --------------------------------
-# rglob finds every *.mrxs under source_dir; item_name = file stem = mask stem.
-background:
-  _target_: report.masks.SlideRetriever
-  paths:
-{paths_block}
-  layer_name: MAMMAPRINT WSI (MIRAX)
-
-# --- mask layers: the cluster masks -------------------------------------------------
-# Per-cluster on/off: the xOpat colormap shader's `threshold.pips` + `toggleMask`
-# render a "Categories" panel with ONE toggle per cluster. Toggle any cluster to
-# show/hide it WITHOUT touching the others - that is the per-cluster on/off.
-# (This is NOT "32 layers": one label mask per slide already carries all 32
-#  clusters; the Categories pips are how xOpat switches individual ones.)
-#
-# Raw xOpat `colormap` shader (not the built-in `classify`, whose colormap
-# assumes class values are uniform over [0,255] and would mis-colour a 0..31
-# label image). A raw shader passes `infer_shader_configuration` through
-# untouched, so the boundaries we set are exactly what xOpat uses.
-#   cluster id c is stored as uint8 value c+1 (the +1 offset); xOpat
-#   normalises a pixel to value/255, so the class boundaries sit at c/255
-#   (threshold.breaks). Bin 0 (value 0) is background, hidden by
-#   threshold.mask[0]=0.
-#
-# Colors: 33 slots, index i = value i (slot 0 = transparent background,
-#   slot i = cluster i-1). Values 1..32 use an even hue-wheel palette with
-#   alternating light/saturate so *neighbouring* clusters (the ones that
-#   touch on the WSI) are maximally distinct.
-mask_retrievers:
-  - _target_: report.masks.DriveMasksRetriever
-    dir_name: {masks_dir.resolve()}
-    layer_name: Clusters (k={k})
-    shader_conf:
-      type: colormap
-      params:
-        use_channel0: r
-        opacity: 0.55
-        connect:
-          type: bool
-          interactive: false
-          default: true
-        color:
-          type: custom_colormap
-          # +1 offset scheme: value i (i=1..32) = cluster i-1; value 0 = background
-          default:
-          - ''            # value 0 = background -> transparent (masked by threshold.mask[0]=0)
-          - "#A64630"      # value 1 = cluster 0
-          - "#F4A87B"      # value 2 = cluster 1
-          - "#A67230"      # value 3 = cluster 2
-          - "#F4D67B"      # value 4 = cluster 3
-          - "#A69F30"      # value 5 = cluster 4
-          - "#E5F47B"      # value 6 = cluster 5
-          - "#81A630"      # value 7 = cluster 6
-          - "#B8F47B"      # value 8 = cluster 7
-          - "#55A630"      # value 9 = cluster 8
-          - "#8AF47B"      # value 10 = cluster 9
-          - "#30A638"      # value 11 = cluster 10
-          - "#7BF499"      # value 12 = cluster 11
-          - "#30A664"      # value 13 = cluster 12
-          - "#7BF4C7"      # value 14 = cluster 13
-          - "#30A690"      # value 15 = cluster 14
-          - "#7BF4F4"      # value 16 = cluster 15
-          - "#3090A6"      # value 17 = cluster 16
-          - "#7BC7F4"      # value 18 = cluster 17
-          - "#3064A6"      # value 19 = cluster 18
-          - "#7B99F4"      # value 20 = cluster 19
-          - "#3038A6"      # value 21 = cluster 20
-          - "#8A7BF4"      # value 22 = cluster 21
-          - "#5530A6"      # value 23 = cluster 22
-          - "#B87BF4"      # value 24 = cluster 23
-          - "#8130A6"      # value 25 = cluster 24
-          - "#E5F47B"      # value 26 = cluster 25
-          - "#A6309F"      # value 27 = cluster 26
-          - "#F47BD6"      # value 28 = cluster 27
-          - "#A63072"      # value 29 = cluster 28
-          - "#F47BA8"      # value 30 = cluster 29
-          - "#A63046"      # value 31 = cluster 30
-          - "#4630A6"      # value 32 = cluster 31
-          steps: 33
-          mode: qualitative
-          interactive: true
-          title: 'Colormap:'
-          continuous: false
-        threshold:
-          # boundary before class c (c=1..32): value c/255
-          breaks:
-          - 0.003922
-          - 0.007843
-          - 0.011765
-          - 0.015686
-          - 0.019608
-          - 0.023529
-          - 0.027451
-          - 0.031373
-          - 0.035294
-          - 0.039216
-          - 0.043137
-          - 0.047059
-          - 0.050980
-          - 0.054902
-          - 0.058824
-          - 0.062745
-          - 0.066667
-          - 0.070588
-          - 0.074510
-          - 0.078431
-          - 0.082353
-          - 0.086275
-          - 0.090196
-          - 0.094118
-          - 0.098039
-          - 0.101961
-          - 0.105882
-          - 0.109804
-          - 0.113725
-          - 0.117647
-          - 0.121569
-          - 0.125490
-          # value 0 = background -> transparent; 1..32 shown
-          mask:
-          - 0
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          - 1
-          interactive: false
-          inverted: true
-          maskOnly: true
-          toggleMask: true
-          title: Categories
-          min: 0
-          max: 1
-          minGap: 0.021505
-          step: null
-          pips:
-            mode: count
-            values: 33
-            density: 4
-            stepped: true
-
-# --- where the report is written ----------------------------------------------------
-save:
-  _target_: report.save.MLFlowReportStorer
-  artifact_path: report.html
-  metadata:
-    experiment_name: Breast Cancer   # MLflow experiment 61 (must exist on the server)
-    run_name: TileMorph k{k} cluster masks
-    description: Per-slide k={k} cluster masks overlaid on the MAMMAPRINT WSIs
-    user: ${{user}}
-"""
-    dest = out / "report_conf" / "reporter" / "region_clustering.yaml"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(cfg)
-    print(f"wrote report config: {dest} ({len(wsi_paths)} slides)")
 
     print(f"\nmorphology vs majority cluster (slides):")
     print(ct.to_string())
