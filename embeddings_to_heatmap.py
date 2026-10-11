@@ -34,18 +34,23 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
     artifact_dir = mlflow.artifacts.download_artifacts(
         f"mlflow-artifacts:/61/{run_id}/artifacts"
     )
-    # Look for checkpoint files
+    # Look for the specific checkpoint: epoch=0-step=16816
     art = Path(artifact_dir)
-    # Common patterns: checkpoints/, model.pt, best.pt, etc.
-    candidates = list(art.glob("**/*.pt")) + list(art.glob("**/*.ckpt")) + list(art.glob("**/*.pth"))
-    if not candidates:
-        print(f"Available artifacts:")
-        for f in sorted(art.rglob("*")):
-            if f.is_file():
-                print(f"  {f.relative_to(art)}")
-        raise SystemExit("No model checkpoint found in MLflow artifacts")
-
-    ckpt = candidates[0]
+    # MLflow lightning checkpoints are typically: checkpoints/epoch=0-step=16816.ckpt
+    specific = list(art.glob("**/epoch=0-step=16816*"))
+    if specific:
+        ckpt = specific[0]
+    else:
+        # Fallback: any checkpoint
+        candidates = list(art.glob("**/*.pt")) + list(art.glob("**/*.ckpt")) + list(art.glob("**/*.pth"))
+        if not candidates:
+            print(f"Available artifacts:")
+            for f in sorted(art.rglob("*")):
+                if f.is_file():
+                    print(f"  {f.relative_to(art)}")
+            raise SystemExit("No model checkpoint found in MLflow artifacts")
+        ckpt = candidates[0]
+        print(f"[warn] specific checkpoint not found, using: {ckpt}")
     print(f"Loading checkpoint: {ckpt}")
 
     import torch
