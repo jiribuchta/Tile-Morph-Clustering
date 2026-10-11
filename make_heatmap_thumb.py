@@ -27,22 +27,21 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
         print(f"  [skip] no tiles for {slide_name}")
         return
 
-    # Build 2D grid from tile coords
-    max_x = slide_tiles["x"].max() + tile_size
-    max_y = slide_tiles["y"].max() + tile_size
-    grid = np.zeros((max_y // stride + 1, max_x // stride + 1), dtype=np.float32)
-
+    # Create heatmap image (red = high score) at display resolution
+    # Tile coords are absolute in level-1 space; scale to display level
+    scale_x = lw / (w / 2)  # level-1 -> display
+    scale_y = lh / (h / 2)
+    hm = np.zeros((lh, lw, 3), dtype=np.uint8)
+    alpha = np.zeros((lh, lw), dtype=np.uint8)
     for _, row in slide_tiles.iterrows():
-        gy = row["y"] // stride
-        gx = row["x"] // stride
-        if gy < grid.shape[0] and gx < grid.shape[1]:
-            grid[gy, gx] = max(grid[gy, gx], row["value"])
-
-    # Create heatmap image (red = high score)
-    hm = np.zeros((*grid.shape, 3), dtype=np.uint8)
-    hm[:, :, 2] = (grid * 255).astype(np.uint8)  # red channel
-    # Alpha: only show where score > 0
-    alpha = (grid > 0).astype(np.uint8) * 150  # semi-transparent
+        dx = int(row["x"] * scale_x)
+        dy = int(row["y"] * scale_y)
+        dw = max(1, int(tile_size * scale_x))
+        dh = max(1, int(tile_size * scale_y))
+        dx = min(dx, lw - dw)
+        dy = min(dy, lh - dh)
+        hm[dy:dy+dh, dx:dx+dw, 2] = max(hm[dy:dy+dh, dx:dx+dw, 2].max() if hm[dy:dy+dh, dx:dx+dw, 2].size else 0, int(row["value"] * 255))
+        alpha[dy:dy+dh, dx:dx+dw] = max(alpha[dy:dy+dh, dx:dx+dw].max() if alpha[dy:dy+dh, dx:dx+dw].size else 0, 150)
 
     # Load WSI at a low pyramid level
     # Path structure: <root>/year/NN/NNN/slide_name/slide_name.tiff
@@ -79,27 +78,8 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_path: str,
     img = slide.read_region((0, 0), level, (lw, lh))
     slide.close()
 
-    # Scale heatmap to match image size
-    # Tile coords are in level-1 pixel space; display image is full WSI at `level`
-    # Scale: display_size / full_WSI_size_at_level1
-    # Full WSI at level 0 is (w, h); at level 1 it's (w/2, h/2)
-    # Display is (lw, lh) = (w >> level, h >> level)
-    # So scale from level-1 coords to display: lw / (w/2) = lw*2/w
-    scale = lw / (w / 2)  # level-1 to display scale
-    hm_w = int(max_x * scale)
-    hm_h = int(max_y * scale)
-    # Create full-size canvas and paste scaled heatmap
-    hm_full = np.zeros((hm_h, hm_w, 3), dtype=np.uint8)
-    alpha_full = np.zeros((hm_h, hm_w), dtype=np.uint8)
-    hm_small_img = Image.fromarray(hm)
-    hm_small_img = hm_small_img.resize((hm_w, hm_h), Image.NEAREST)
-    alpha_small_img = Image.fromarray(alpha)
-    alpha_small_img = alpha_small_img.resize((hm_w, hm_h), Image.NEAREST)
-    hm_full = np.array(hm_small_img)
-    alpha_full = np.array(alpha_small_img)
-    # Now resize full canvas to display size
-    hm_img = Image.fromarray(hm_full).resize(img.size, Image.NEAREST)
-    alpha_img = Image.fromarray(alpha_full).resize(img.size, Image.NEAREST)
+    hm_img = Image.fromarray(hm)
+    alpha_img = Image.fromarray(alpha)
 
     # Composite: WSI + red overlay
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
