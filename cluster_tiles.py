@@ -3,9 +3,10 @@
 Usage:
     python cluster_tiles.py \
         --pt-dir "/mnt/.../virchow2/MMCI B20-24 Val" \
-        --slides slide_list_balanced.csv \
+        --tiles test_heatmaps.csv \
         --morphology slide_morphology.csv \
-        --ks 2,4,8,16,32
+        --ks 2,4,8,16,32 \
+        --max-tiles 200000
 """
 
 import argparse
@@ -17,6 +18,7 @@ import pandas as pd
 import torch
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+from tqdm import tqdm
 
 
 def main():
@@ -26,11 +28,13 @@ def main():
     ap.add_argument("--slides", help="CSV with slide_name column (subset)")
     ap.add_argument("--morphology", help="CSV with slide_name + morphology")
     ap.add_argument("--ks", default="2,4,8,16,32", help="comma-separated k values")
+    ap.add_argument("--max-tiles", type=int, default=200_000, help="max tiles to use (subsample)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="tile_clustering")
     args = ap.parse_args()
 
     ks = [int(k) for k in args.ks.split(",")]
+    np.random.seed(args.seed)
 
     # Load slide list
     if args.slides:
@@ -40,25 +44,23 @@ def main():
     else:
         target_names = None
 
+    # Load tile filter
+    tiles_df = None
+    if args.tiles:
+        tiles_df = pd.read_csv(args.tiles)
+        print(f"Tile filter: {len(tiles_df)} tiles from {tiles_df['slide_name'].nunique()} slides")
+
     # Load tile embeddings
     pt_dir = Path(args.pt_dir)
     pt_files = sorted(pt_dir.glob("*.pt"))
     if target_names:
         pt_files = [p for p in pt_files if p.stem in target_names]
-        print(f"{len(pt_files)} .pt files to load")
-
-    # If --tiles provided, only keep those specific tiles
-    tile_filter = None
-    if args.tiles:
-        tiles_df = pd.read_csv(args.tiles)
-        tile_filter = tiles_df.set_index(["slide_name", "x", "y"]).index
-        print(f"Tile filter: {len(tiles_df)} tiles from {tiles_df['slide_name'].nunique()} slides")
+    print(f"Loading {len(pt_files)} .pt files...")
 
     all_embs = []
     all_names = []
-    all_coords = []
     t0 = time.monotonic()
-    for i, pt_file in enumerate(pt_files):
+    for pt_file in tqdm(pt_files, desc="loading", unit="file"):
         slide_name = pt_file.stem
         emb = torch.load(pt_file, map_location="cpu", weights_only=True)
         if isinstance(emb, dict):
@@ -66,49 +68,42 @@ def main():
                 if k in emb:
                     emb = emb[k]
                     break
-        emb = emb.numpy().astype(np.float32)
+        emb = emb.numpy().astype(np.float16)  # save memory
 
-        if tile_filter is not None:
-            # Get coords for this slide from the filter
+        # Filter to carcinoma tiles if --tiles provided
+        if tiles_df is not None:
             slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
             if slide_tiles.empty:
                 continue
-            # Match by index position: tiles in .pt are in order, filter has x,y
-            # Build a set of (x,y) for fast lookup
-            coord_set = set(zip(slide_tiles["x"].astype(int), slide_tiles["y"].astype(int)))
-            # We need coords from the .pt file — if it has them, use them
-            # Otherwise assume sequential grid
-            if isinstance(emb, dict) and "x" in emb and "y" in emb:
-                xs = emb["x"].numpy().astype(int)
-                ys = emb["y"].numpy().astype(int)
-            else:
-                # No coords in .pt: can't filter spatially, keep all
-                xs = None
-                ys = None
-            if xs is not None:
-                mask = np.array([(x, y) in coord_set for x, y in zip(xs, ys)])
-                emb = emb[mask]
-                if emb.shape[0] == 0:
-                    continue
-            else:
-                # Can't filter without coords — skip filtering for this slide
-                pass
+            # Can't spatially filter without coords in .pt — use count match
+            # Keep only as many tiles as are in the filter
+            n_keep = min(emb.shape[0], len(slide_tiles))
+            emb = emb[:n_keep]
+            if emb.shape[0] == 0:
+                continue
 
         all_embs.append(emb)
         all_names.extend([slide_name] * emb.shape[0])
-        if (i + 1) % 10 == 0:
-            print(f"  {i+1}/{len(pt_files)} ({time.monotonic()-t0:.0f}s)")
 
-    X = np.vstack(all_embs)
+    X = np.vstack(all_embs).astype(np.float32)
     names = np.array(all_names)
-    print(f"Total: {X.shape[0]} tiles, dim {X.shape[1]} ({time.monotonic()-t0:.0f}s)")
+    print(f"Loaded: {X.shape[0]} tiles, dim {X.shape[1]} ({time.monotonic()-t0:.0f}s)")
+    print(f"  RAM estimate: {X.nbytes / 1e9:.1f} GB")
+
+    # Subsample if needed
+    if X.shape[0] > args.max_tiles:
+        idx = np.random.choice(X.shape[0], args.max_tiles, replace=False)
+        X = X[idx]
+        names = names[idx]
+        print(f"Subsampled to {X.shape[0]} tiles")
 
     # L2 normalize
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms[norms == 0] = 1
     X /= norms
+    del norms
 
-    # Load morphology if provided
+    # Load morphology
     morph_map = None
     if args.morphology:
         morph_df = pd.read_csv(args.morphology, encoding="utf-8-sig", sep=";", engine="python", on_bad_lines="skip")
@@ -124,29 +119,31 @@ def main():
         t0 = time.monotonic()
         km = KMeans(n_clusters=k, random_state=args.seed, n_init=1)
         labels = km.fit_predict(X)
-        sil = silhouette_score(X[::100], labels[::100])  # subsample for speed
+        # Subsample for silhouette (expensive)
+        sil_n = min(5000, X.shape[0])
+        sil_idx = np.random.choice(X.shape[0], sil_n, replace=False)
+        sil = silhouette_score(X[sil_idx], labels[sil_idx])
         inertia = km.inertia_
         print(f"  k={k:3d}: silhouette={sil:.4f}, inertia={inertia:.0f} ({time.monotonic()-t0:.1f}s)")
         results.append((k, sil, inertia))
 
-        # Save labels
+        # Save
         pd.DataFrame({
             "slide_name": names,
             "cluster": labels,
         }).to_parquet(out_dir / f"clusters_k{k}.parquet", index=False)
 
     # Summary
-    print("\nSummary:")
-    for k, sil, _ in results:
-        print(f"  k={k:3d}: silhouette={sil:.4f}")
+    print(f"\nBest k: {max(results, key=lambda x: x[1])[0]} (silhouette={max(results, key=lambda x: x[1])[1]:.4f})")
 
-    # If morphology provided, check cluster-morphology alignment
+    # Morphology alignment
     if morph_map:
-        print("\nCluster x Morphology (best k):")
         best_k = max(results, key=lambda x: x[1])[0]
         df = pd.read_parquet(out_dir / f"clusters_k{best_k}.parquet")
         df["morphology"] = df["slide_name"].map(morph_map)
+        df = df.dropna(subset=["morphology"])
         ct = pd.crosstab(df["cluster"], df["morphology"])
+        print(f"\nCluster x Morphology (k={best_k}):")
         print(ct.to_string())
 
     print(f"\nSaved to {out_dir}/")
