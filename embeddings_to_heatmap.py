@@ -185,11 +185,11 @@ def main():
                     mask_target = np.ones(n, dtype=bool)
 
                 mask = (scores >= args.min_value) & mask_target
-                if pi == 0 and not hasattr(main, '_debugged'):
+                n_target = int(mask_target.sum()) if target_slides is not None else n
+                if n_target > 0 and not hasattr(main, '_debugged'):
                     main._debugged = True
-                    n_target = int(mask_target.sum()) if target_slides is not None else n
-                    print(f"  [debug] tiles in this batch: {n}, target slides: {n_target}")
-                    print(f"  [debug] score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
+                    print(f"  [debug] first batch with target: {n_target}/{n} tiles")
+                    print(f"  [debug] target score range [{scores[mask_target].min():.4f}, {scores[mask_target].max():.4f}], mean {scores[mask_target].mean():.4f}")
                 if mask.any():
                     pd.DataFrame({
                         "slide_name": [names[i] for i in np.where(mask)[0]],
