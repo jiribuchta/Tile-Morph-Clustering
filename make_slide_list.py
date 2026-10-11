@@ -52,9 +52,9 @@ def main():
         for morph_val, group in merged.groupby("morphology"):
             n = min(args.balanced, len(group))
             parts.append(group.sample(n=n, random_state=args.seed)["slide_name"].tolist())
-        all_slides = [s for part in parts for s in part]
+        balanced_df = merged[merged["slide_name"].isin(all_slides)]
         balanced_csv = args.out.replace(".csv", "_balanced.csv")
-        pd.DataFrame({"slide_name": all_slides}).to_csv(balanced_csv, index=False)
+        balanced_df.to_csv(balanced_csv, index=False)
         print(f"wrote {len(all_slides)} balanced slides -> {balanced_csv}")
         print(f"  --slides {','.join(all_slides)}")
 
