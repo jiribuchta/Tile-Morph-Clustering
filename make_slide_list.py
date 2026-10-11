@@ -18,6 +18,8 @@ def main():
     morph = pd.read_csv(args.morphology_csv, encoding="utf-8-sig", sep=";", engine="python", on_bad_lines="skip")
 
     # join on id == record
+    print(f"  slides.id samples: {slides['id'].head(3).tolist()}")
+    print(f"  morph.record samples: {morph['record'].head(3).tolist()}")
     merged = slides[["id", "path"]].merge(
         morph[["record", "morphology"]],
         left_on="id", right_on="record", how="inner",
