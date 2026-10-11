@@ -111,6 +111,8 @@ def main():
                     help="root of bioptic tree for WSI paths")
     ap.add_argument("--load-x", action="store_true",
                     help="load X_regions.npy + region_meta.parquet from --data, skip embedding collection")
+    ap.add_argument("--slides", default=None,
+                    help="process only this slide name (comma-separated for multiple)")
     args = ap.parse_args()
     if not args.load_x and not args.embeddings:
         raise SystemExit("--embeddings required unless --load-x")
@@ -132,6 +134,12 @@ def main():
     n_tiles = sum(len(r["encs"]) for r in regions.values())
     n_regions = sum(len(r["regions"]) for r in regions.values())
     print(f"  {len(regions)} slides, {n_tiles} carcinoma tiles, {n_regions} regions")
+    if args.slides:
+        keep = set(args.slides.split(","))
+        regions = {k: v for k, v in regions.items() if k in keep}
+        if not regions:
+            raise SystemExit(f"none of {args.slides} found in regions")
+        print(f"  filtered to {len(regions)} slide(s): {sorted(regions)}")
 
     # slide_id -> morphology (via slide_name in the tiles CSV)
     morph_by_sid: dict[str, str] = {}
