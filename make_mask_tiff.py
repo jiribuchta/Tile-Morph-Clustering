@@ -53,35 +53,35 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
     scale_x = 2.0
     scale_y = 2.0
 
-    # Create mask at level 0 resolution
-    mask = np.zeros((h, w), dtype=np.float32)
+    # Create mask at level 0 resolution (uint8 to save memory)
+    mask = np.zeros((h, w), dtype=np.uint8)
 
     # Get tile size in level-1 pixels (default 224)
     tile_size = 224
 
-    for _, row in slide_tiles.iterrows():
+    # Pre-compute normalized values
+    vals = slide_tiles["value"].values
+    v_min, v_max = vals.min(), vals.max()
+    if v_max > v_min:
+        norm_vals = ((vals - v_min) / (v_max - v_min) * 255).astype(np.uint8)
+    else:
+        norm_vals = np.zeros(len(vals), dtype=np.uint8)
+
+    for i, (_, row) in enumerate(slide_tiles.iterrows()):
         dx = int(row["x"] * scale_x)
         dy = int(row["y"] * scale_y)
         dw = int(tile_size * scale_x)
         dh = int(tile_size * scale_y)
         dx = min(max(dx, 0), w - dw)
         dy = min(max(dy, 0), h - dh)
-        val = float(row["value"])
+        val = norm_vals[i]
         mask[dy:dy+dh, dx:dx+dw] = np.maximum(mask[dy:dy+dh, dx:dx+dw], val)
 
-    # Normalize to 0-255
-    mask_min, mask_max = mask.min(), mask.max()
-    if mask_max > mask_min:
-        mask_norm = (mask - mask_min) / (mask_max - mask_min) * 255
-    else:
-        mask_norm = np.zeros_like(mask)
-    mask_uint8 = mask_norm.astype(np.uint8)
-
     # Save as TIFF
-    img = Image.fromarray(mask_uint8, mode="L")
+    img = Image.fromarray(mask, mode="L")
     img.save(out_path, compression="tiff_lzw")
     print(f"Saved: {out_path} ({w}x{h})")
-    print(f"  Value range: [{mask_min:.3f}, {mask_max:.3f}]")
+    print(f"  Value range: [{v_min:.3f}, {v_max:.3f}]")
 
 
 def main():
