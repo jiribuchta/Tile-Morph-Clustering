@@ -48,7 +48,7 @@ def main():
         slide_name = pt_file.stem
         if slide_name not in morph_map:
             continue
-        label = 0 if morph_map[slide_name] == "8500" else 1
+        label = 0 if str(morph_map[slide_name]) == "8500" else 1
 
         emb = torch.load(pt_file, map_location="cpu", weights_only=False)
         if isinstance(emb, dict):
