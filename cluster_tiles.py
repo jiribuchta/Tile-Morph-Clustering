@@ -29,6 +29,7 @@ def main():
     ap.add_argument("--morphology", help="CSV with slide_name + morphology")
     ap.add_argument("--ks", default="2,4,8,16,32", help="comma-separated k values")
     ap.add_argument("--max-tiles", type=int, default=200_000, help="max tiles to use (subsample)")
+    ap.add_argument("--pca", type=int, default=0, help="PCA components (0=off)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="tile_clustering")
     args = ap.parse_args()
@@ -111,6 +112,15 @@ def main():
     norms[norms == 0] = 1
     X /= norms
     del norms
+
+    # PCA
+    if args.pca > 0:
+        from sklearn.decomposition import PCA
+        print(f"PCA: {X.shape[1]} -> {args.pca} dims...")
+        t0 = time.monotonic()
+        pca = PCA(n_components=args.pca, random_state=args.seed)
+        X = pca.fit_transform(X)
+        print(f"  explained variance: {pca.explained_variance_.sum():.1%} ({time.monotonic()-t0:.0f}s)")
 
     # Load morphology
     morph_map = None
