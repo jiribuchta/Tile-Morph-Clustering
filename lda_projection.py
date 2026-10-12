@@ -157,7 +157,7 @@ def main():
         # Let's just use the tiles_df coords directly
         for _, trow in slide_tiles.iterrows():
             if idx < len(proj_lda):
-                rows.append((slide_name, int(trow["x"]), int(trow["y"]), float(proj_lda[idx])))
+                rows.append((slide_name, int(trow["x"]), int(trow["y"]), proj_lda[idx].item()))
                 idx += 1
     # Write CSV
     pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"]).to_csv(out_csv, index=False)
