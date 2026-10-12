@@ -177,10 +177,8 @@ def main():
 
     # --- Save LDA direction ---
     if args.save_direction:
-        # LDA direction = coef_ * scaled_intercept_ logic
-        # For LDA, the projection direction is lda.coef_ (shape: [n_classes, n_features])
-        # For 2 classes, the separating direction is coef_[1] - coef_[0]
-        direction = lda.coef_[1] - lda.coef_[0]
+        # For binary LDA, coef_ has shape (1, n_features); direction = coef_[0]
+        direction = lda.coef_[0]
         direction /= np.linalg.norm(direction)
         np.save(args.save_direction, direction)
         print(f"\nSaved LDA direction to {args.save_direction}")
