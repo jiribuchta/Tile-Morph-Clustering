@@ -17,7 +17,7 @@ submit_job(
         "uv sync",
         f"mkdir -p {OUT_DIR}",
         f"cut -d, -f1 {TILES} | tail -n +2 | sort -u | while read s; do "
-        f"uv run python -u make_mask_tiff.py --tiles {TILES} --wsi-root {WSI_ROOT} --slide \"$s\" --out {OUT_DIR}/mask_$s.tiff; "
+        f"uv run python -u make_mask_tiff.py --tiles {TILES} --wsi-root {WSI_ROOT} --slide \"$s\" --out {OUT_DIR}/$s.tiff; "
         f"done",
     ],
     storage=[storage.secure.DATA, storage.secure.PROJECTS, storage.secure.BIOPTIC_TREE],
