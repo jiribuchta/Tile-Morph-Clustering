@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import torch
+from tqdm import tqdm
 
 TRACKING_URI = "http://mlflow.rationai-mlflow:5000"
 # Virchow2 (Frozen) selected model from BRC-A-29
@@ -115,14 +116,12 @@ def process_pt_files(pt_dir: Path, target_names: set | None, W: np.ndarray, b: n
     n_tiles_total = 0
     n_skipped = 0
     t0 = time.monotonic()
-    for pi, pt_file in enumerate(pt_files):
+    for pi, pt_file in enumerate(tqdm(pt_files, desc="slides", unit="slide")):
         slide_name = pt_file.stem
         out_path = out_dir / f"{slide_name}.parquet"
         if out_path.exists():
             n_skipped += 1
             continue  # resume: slide already done
-        if pi % 5 == 0:
-            print(f"  {pi+1}/{len(pt_files)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
         data = torch.load(pt_file, map_location="cpu", weights_only=True)
 
         # Handle different formats
@@ -216,7 +215,7 @@ def process_parquets(embed_dir: str, target_slides: set | None, id_to_name: dict
     n_rows = 0
     n_target_total = 0
     t0 = time.monotonic()
-    for pi, part in enumerate(target_parts):
+    for pi, part in enumerate(tqdm(target_parts, desc="parts", unit="part")):
         out_path = out_dir / f"part_{pi:06d}.parquet"
         if out_path.exists():
             continue  # resume: part already done
@@ -261,8 +260,6 @@ def process_parquets(embed_dir: str, target_slides: set | None, id_to_name: dict
 
         df = pd.concat(part_rows, ignore_index=True) if part_rows else pd.DataFrame(columns=["slide_name", "x", "y", "value"])
         df.to_parquet(out_path)
-        if (pi + 1) % 10 == 0:
-            print(f"  {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
 
     if target_slides is not None:
         print(f"total target tiles: {n_target_total}")
