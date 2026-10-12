@@ -1,6 +1,7 @@
 from kube_jobs import storage, submit_job
 
 OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores.csv"
+DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction.npy"
 TILES = "/mnt/projects/breast_cancer/tile_morph_clustering/test_heatmaps.csv"
 MORPH = "/mnt/projects/breast_cancer/tile_morph_clustering/slide_list_balanced.csv"
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Val"
@@ -16,7 +17,7 @@ submit_job(
         "git clone https://github.com/jiribuchta/Tile-Morph-Clustering.git workdir",
         "cd workdir",
         "uv sync",
-        f"uv run python -u lda_projection.py --pt-dir '{PT_DIR}' --tiles {TILES} --morphology {MORPH} --out {OUT}",
+        f"uv run python -u lda_projection.py --pt-dir '{PT_DIR}' --tiles {TILES} --morphology {MORPH} --out {OUT} --save-direction {DIRECTION}",
     ],
     storage=[storage.secure.DATA, storage.secure.PROJECTS, storage.secure.BIOPTIC_TREE],
 )
