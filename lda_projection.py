@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--tiles", required=True, help="heatmap CSV")
     ap.add_argument("--morphology", required=True, help="CSV with slide_name + morphology")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--min-tile-value", type=float, default=0.0,
+                    help="only use tiles with carcinoma score >= this (e.g. 0.9)")
     ap.add_argument("--out", default="lda_scores.csv", help="output CSV path")
     ap.add_argument("--save-direction", default=None, help="save LDA direction .npy (for scoring new slides)")
     ap.add_argument("--load-direction", default=None, help="load LDA direction .npy to score new slides (skip training)")
@@ -40,6 +42,9 @@ def main():
         print(f"Loaded LDA direction ({direction.shape[0]} dims) from {args.load_direction}")
 
         tiles_df = read_tiles(args.tiles)
+        if args.min_tile_value > 0:
+            tiles_df = tiles_df[tiles_df["value"] >= args.min_tile_value]
+            print(f"Tiles >= {args.min_tile_value}: {len(tiles_df)}")
         pt_dir = Path(args.pt_dir)
         pt_files = sorted(pt_dir.glob("*.pt"))
         print(f"Scoring {len(pt_files)} slides...")
@@ -78,6 +83,9 @@ def main():
 
     # Load tile filter
     tiles_df = read_tiles(args.tiles)
+    if args.min_tile_value > 0:
+        tiles_df = tiles_df[tiles_df["value"] >= args.min_tile_value]
+        print(f"Tiles >= {args.min_tile_value}: {len(tiles_df)}")
     tile_slides = set(tiles_df["slide_name"])
     print(f"Tiles: {len(tiles_df)} from {len(tile_slides)} slides")
 
