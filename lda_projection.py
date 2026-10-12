@@ -25,9 +25,48 @@ def main():
     ap.add_argument("--morphology", required=True, help="CSV with slide_name + morphology")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="lda_scores.csv", help="output CSV path")
+    ap.add_argument("--save-direction", default=None, help="save LDA direction .npy (for scoring new slides)")
+    ap.add_argument("--load-direction", default=None, help="load LDA direction .npy to score new slides (skip training)")
     args = ap.parse_args()
 
-    # Load morphology map
+    # --- Load-direction mode: score new slides with a saved direction ---
+    if args.load_direction:
+        direction = np.load(args.load_direction)
+        print(f"Loaded LDA direction ({direction.shape[0]} dims) from {args.load_direction}")
+
+        tiles_df = pd.read_csv(args.tiles)
+        pt_dir = Path(args.pt_dir)
+        pt_files = sorted(pt_dir.glob("*.pt"))
+        print(f"Scoring {len(pt_files)} slides...")
+
+        rows = []
+        for pt_file in tqdm(pt_files, desc="scoring", unit="slide"):
+            slide_name = pt_file.stem
+            slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
+            if slide_tiles.empty:
+                continue
+            emb = torch.load(pt_file, map_location="cpu", weights_only=False)
+            if isinstance(emb, dict):
+                for k in ("embeddings", "embedding", "emb", "features"):
+                    if k in emb:
+                        emb = emb[k]
+                        break
+            emb = emb.numpy().astype(np.float32)
+            n_keep = min(emb.shape[0], len(slide_tiles))
+            emb = emb[:n_keep]
+            # L2 normalize + project
+            norms = np.linalg.norm(emb, axis=1, keepdims=True)
+            norms[norms == 0] = 1
+            emb /= norms
+            scores = emb @ direction
+            for i, (_, trow) in enumerate(slide_tiles.iterrows()):
+                rows.append((slide_name, int(trow["x"]), int(trow["y"]), scores[i].item()))
+
+        pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"]).to_csv(args.out, index=False)
+        print(f"Saved {len(rows)} tiles to {args.out}")
+        return
+
+    # --- Training mode ---
     morph_df = pd.read_csv(args.morphology)
     morph_map = dict(zip(morph_df["slide_name"], morph_df["morphology"]))
     print(f"Morphology: {morph_df['morphology'].value_counts().to_dict()}")
@@ -136,11 +175,17 @@ def main():
     else:
         print("  -> Large difference. Strong signal.")
 
+    # --- Save LDA direction ---
+    if args.save_direction:
+        # LDA direction = coef_ * scaled_intercept_ logic
+        # For LDA, the projection direction is lda.coef_ (shape: [n_classes, n_features])
+        # For 2 classes, the separating direction is coef_[1] - coef_[0]
+        direction = lda.coef_[1] - lda.coef_[0]
+        direction /= np.linalg.norm(direction)
+        np.save(args.save_direction, direction)
+        print(f"\nSaved LDA direction to {args.save_direction}")
+
     # --- Save LDA projections to CSV ---
-    # Need tile coords: reload from tiles_df
-    # proj_lda is in the same order as X, which was built from pt_files in order
-    # We need to map back to (slide_name, x, y)
-    # Rebuild the mapping
     out_csv = Path(args.out)
     rows = []
     idx = 0
@@ -151,15 +196,10 @@ def main():
         slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
         if slide_tiles.empty:
             continue
-        n_keep = min(slide_tiles.shape[0], slide_tiles.shape[0])  # all tiles
-        # We need the original embedding size to know how many rows
-        # Actually we stored n_keep = min(emb.shape[0], len(slide_tiles)) during loading
-        # Let's just use the tiles_df coords directly
         for _, trow in slide_tiles.iterrows():
             if idx < len(proj_lda):
                 rows.append((slide_name, int(trow["x"]), int(trow["y"]), proj_lda[idx].item()))
                 idx += 1
-    # Write CSV
     pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"]).to_csv(out_csv, index=False)
     print(f"\nSaved {len(rows)} tiles to {out_csv}")
 
