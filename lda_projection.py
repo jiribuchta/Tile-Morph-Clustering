@@ -115,8 +115,8 @@ def main():
     proj_lda_8520 = proj_lda[y == 1]
     print(f"  8500: mean={proj_lda_8500.mean():.6f}, std={proj_lda_8500.std():.6f}")
     print(f"  8520: mean={proj_lda_8520.mean():.6f}, std={proj_lda_8520.std():.6f}")
-    t_stat, p_value = stats.ttest_ind(proj_lda_8500, proj_lda_8520)
-    print(f"  t-test: t={float(t_stat):.3f}, p={float(p_value):.2e}")
+    t_res = stats.ttest_ind(proj_lda_8500, proj_lda_8520)
+    print(f"  t-test: t={np.asarray(t_res.statistic).item():.3f}, p={np.asarray(t_res.pvalue).item():.2e}")
     threshold = proj_lda_8500.mean()
     print(f"  Above 8500 mean: 8500={(proj_lda_8500 > threshold).mean():.1%}, 8520={(proj_lda_8520 > threshold).mean():.1%}")
     print(f"  ({time.monotonic()-t0:.0f}s)")
