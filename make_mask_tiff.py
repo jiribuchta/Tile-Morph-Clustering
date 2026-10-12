@@ -59,13 +59,11 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
     # Get tile size in level-1 pixels (default 224)
     tile_size = 224
 
-    # Pre-compute normalized values
+    # Fixed global scale from training stats (8500 mean=-1.65, 8520 mean=+1.54,
+    # std ~= 1.0). Score -3..+3 maps to 0..255; same pixel value = same meaning
+    # on every slide. 128 (white) = genuinely ambiguous.
+    SCALE = 3.0
     vals = slide_tiles["value"].values
-    v_min, v_max = vals.min(), vals.max()
-    if v_max > v_min:
-        norm_vals = ((vals - v_min) / (v_max - v_min) * 255).astype(np.uint8)
-    else:
-        norm_vals = np.zeros(len(vals), dtype=np.uint8)
 
     for i, (_, row) in enumerate(slide_tiles.iterrows()):
         dx = int(row["x"] * scale_x)
@@ -74,14 +72,15 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
         dh = int(tile_size * scale_y)
         dx = min(max(dx, 0), w - dw)
         dy = min(max(dy, 0), h - dh)
-        val = norm_vals[i]
+        val = np.clip(vals[i] / SCALE, -1.0, 1.0) * 127.5 + 127.5
+        val = val.astype(np.uint8)
         mask[dy:dy+dh, dx:dx+dw] = np.maximum(mask[dy:dy+dh, dx:dx+dw], val)
 
     # Save as pyramid TIFF (openslide-compatible)
     img = pyvips.Image.new_from_array(mask)
     img.tiffsave(out_path, tile=True, pyramid=True, bigtiff=True, compression="lzw")
     print(f"Saved: {out_path} ({w}x{h})")
-    print(f"  Value range: [{v_min:.3f}, {v_max:.3f}]")
+    print(f"  LDA score range: [{vals.min():.3f}, {vals.max():.3f}]")
 
 
 def main():
