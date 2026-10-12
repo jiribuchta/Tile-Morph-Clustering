@@ -135,6 +135,33 @@ def main():
     else:
         print("  -> Large difference. Strong signal.")
 
+    # --- Save LDA projections to CSV ---
+    # Need tile coords: reload from tiles_df
+    # proj_lda is in the same order as X, which was built from pt_files in order
+    # We need to map back to (slide_name, x, y)
+    # Rebuild the mapping
+    out_csv = Path("lda_scores.csv")
+    rows = []
+    idx = 0
+    for pt_file in pt_files:
+        slide_name = pt_file.stem
+        if slide_name not in morph_map:
+            continue
+        slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
+        if slide_tiles.empty:
+            continue
+        n_keep = min(slide_tiles.shape[0], slide_tiles.shape[0])  # all tiles
+        # We need the original embedding size to know how many rows
+        # Actually we stored n_keep = min(emb.shape[0], len(slide_tiles)) during loading
+        # Let's just use the tiles_df coords directly
+        for _, trow in slide_tiles.iterrows():
+            if idx < len(proj_lda):
+                rows.append((slide_name, int(trow["x"]), int(trow["y"]), float(proj_lda[idx])))
+                idx += 1
+    # Write CSV
+    pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"]).to_csv(out_csv, index=False)
+    print(f"\nSaved {len(rows)} tiles to {out_csv}")
+
 
 if __name__ == "__main__":
     main()
