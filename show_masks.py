@@ -6,6 +6,7 @@ Usage:
 
 import argparse
 from pathlib import Path
+import openslide
 from PIL import Image
 
 
@@ -21,11 +22,16 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for tiff in sorted(masks_dir.glob("*.tiff")):
-        img = Image.open(tiff)
-        img = img.resize((args.size, int(img.height * args.size / img.width)), Image.LANCZOS)
+        slide = openslide.OpenSlide(str(tiff))
+        # Find the level closest to args.size width
+        levels = slide.mpyramid_levels
+        best = min(levels, key=lambda l: abs(l[0] - args.size))
+        img = slide.read_region((0, 0), best[2], (best[0], best[1]))
+        img = img.convert("L")
         out_path = out_dir / f"{tiff.stem}.jpg"
         img.save(out_path, quality=85)
         print(f"{out_path} ({img.width}x{img.height})")
+        slide.close()
 
     print(f"\n{len(list(out_dir.glob('*.jpg')))} previews in {out_dir}")
 
