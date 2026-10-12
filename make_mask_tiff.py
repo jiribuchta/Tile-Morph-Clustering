@@ -19,7 +19,7 @@ import pyvips
 
 def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
     """Create a full-resolution (level 0) mask TIFF from tile scores."""
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path) if str(csv_path).endswith(".csv") else pd.read_parquet(csv_path)
     slide_tiles = df[df["slide_name"] == slide_name]
     if slide_tiles.empty:
         print(f"[skip] no tiles for {slide_name}")

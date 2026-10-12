@@ -18,6 +18,11 @@ from tqdm import tqdm
 from scipy import stats
 
 
+def read_tiles(p):
+    """Read tiles table from a CSV or a directory of parquets."""
+    return pd.read_csv(p) if str(p).endswith(".csv") else pd.read_parquet(p)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pt-dir", required=True)
@@ -34,7 +39,7 @@ def main():
         direction = np.load(args.load_direction)
         print(f"Loaded LDA direction ({direction.shape[0]} dims) from {args.load_direction}")
 
-        tiles_df = pd.read_csv(args.tiles)
+        tiles_df = read_tiles(args.tiles)
         pt_dir = Path(args.pt_dir)
         pt_files = sorted(pt_dir.glob("*.pt"))
         print(f"Scoring {len(pt_files)} slides...")
@@ -72,7 +77,7 @@ def main():
     print(f"Morphology: {morph_df['morphology'].value_counts().to_dict()}")
 
     # Load tile filter
-    tiles_df = pd.read_csv(args.tiles)
+    tiles_df = read_tiles(args.tiles)
     tile_slides = set(tiles_df["slide_name"])
     print(f"Tiles: {len(tiles_df)} from {len(tile_slides)} slides")
 

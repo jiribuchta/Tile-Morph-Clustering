@@ -1,20 +1,21 @@
 """Generate per-tile carcinoma scores from Virchow2 embeddings + classifier head.
 
 Downloads the trained linear head from MLflow, runs it on tile embeddings,
-and writes a CSV: slide_name, x, y, value.
+and writes one .parquet per slide: slide_name, x, y, value.
+Resumable: existing per-slide parquets are skipped on rerun.
 
 Usage (per-slide .pt files — preferred):
     python embeddings_to_heatmap.py \
         --pt-dir "/mnt/.../tile_embeddings/virchow2/MMCI B20-24 Val" \
         --slides slide_list.csv \
-        --out heatmaps_tiles.csv \
+        --out heatmaps_tiles \
         --min-value 0.5
 
 Usage (sharded parquets):
     python embeddings_to_heatmap.py \
         --embeddings "/path/to/Virchow2" \
         --slides slide_list.csv \
-        --out heatmaps_tiles.csv \
+        --out heatmaps_tiles \
         --min-value 0.5
 """
 
@@ -108,76 +109,80 @@ def process_pt_files(pt_dir: Path, target_names: set | None, W: np.ndarray, b: n
         pt_files = [p for p in pt_files if p.stem in target_names]
         print(f"  {len(pt_files)} match target slides")
 
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
     n_rows = 0
     n_tiles_total = 0
+    n_skipped = 0
     t0 = time.monotonic()
-    with open(out, "w", newline="") as f:
-        f.write("slide_name,x,y,value\n")
-        for pi, pt_file in enumerate(pt_files):
-            slide_name = pt_file.stem
-            if pi % 5 == 0:
-                print(f"  {pi+1}/{len(pt_files)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
-            data = torch.load(pt_file, map_location="cpu", weights_only=True)
+    for pi, pt_file in enumerate(pt_files):
+        slide_name = pt_file.stem
+        out_path = out_dir / f"{slide_name}.parquet"
+        if out_path.exists():
+            n_skipped += 1
+            continue  # resume: slide already done
+        if pi % 5 == 0:
+            print(f"  {pi+1}/{len(pt_files)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
+        data = torch.load(pt_file, map_location="cpu", weights_only=True)
 
-            # Handle different formats
-            if isinstance(data, dict):
-                emb = None
-                xs = None
-                ys = None
-                for k in ("embeddings", "embedding", "emb", "features"):
-                    if k in data:
-                        emb = data[k].numpy().astype(np.float32)
-                        break
-                for k in ("x", "xs", "x_coords"):
-                    if k in data:
-                        xs = data[k].numpy().astype(np.int32)
-                        break
-                for k in ("y", "ys", "y_coords"):
-                    if k in data:
-                        ys = data[k].numpy().astype(np.int32)
-                        break
-                if emb is None:
-                    if pi == 0:
-                        print(f"  [debug] keys in {pt_file.name}: {list(data.keys())}")
-                        for k, v in data.items():
-                            print(f"    {k}: {type(v).__name__}", getattr(v, 'shape', ''))
-                    raise SystemExit(f"Cannot find embeddings in {pt_file.name}")
-                if xs is None or ys is None:
-                    n = emb.shape[0]
-                    side = int(n ** 0.5)
-                    xs = np.tile(np.arange(side), n // side).astype(np.int32)
-                    ys = np.repeat(np.arange(n // side), side).astype(np.int32)
-                    print(f"  [warn] {pt_file.name}: no coords, generated {side}x{side} grid")
-            else:
-                emb = data.numpy().astype(np.float32)
+        # Handle different formats
+        if isinstance(data, dict):
+            emb = None
+            xs = None
+            ys = None
+            for k in ("embeddings", "embedding", "emb", "features"):
+                if k in data:
+                    emb = data[k].numpy().astype(np.float32)
+                    break
+            for k in ("x", "xs", "x_coords"):
+                if k in data:
+                    xs = data[k].numpy().astype(np.int32)
+                    break
+            for k in ("y", "ys", "y_coords"):
+                if k in data:
+                    ys = data[k].numpy().astype(np.int32)
+                    break
+            if emb is None:
+                if pi == 0:
+                    print(f"  [debug] keys in {pt_file.name}: {list(data.keys())}")
+                    for k, v in data.items():
+                        print(f"    {k}: {type(v).__name__}", getattr(v, 'shape', ''))
+                raise SystemExit(f"Cannot find embeddings in {pt_file.name}")
+            if xs is None or ys is None:
                 n = emb.shape[0]
                 side = int(n ** 0.5)
                 xs = np.tile(np.arange(side), n // side).astype(np.int32)
                 ys = np.repeat(np.arange(n // side), side).astype(np.int32)
-                print(f"  [warn] {pt_file.name}: tensor only, generated {side}x{side} grid")
-
+                print(f"  [warn] {pt_file.name}: no coords, generated {side}x{side} grid")
+        else:
+            emb = data.numpy().astype(np.float32)
             n = emb.shape[0]
-            n_tiles_total += n
+            side = int(n ** 0.5)
+            xs = np.tile(np.arange(side), n // side).astype(np.int32)
+            ys = np.repeat(np.arange(n // side), side).astype(np.int32)
+            print(f"  [warn] {pt_file.name}: tensor only, generated {side}x{side} grid")
 
-            # Run head: sigmoid(W @ emb + b) — no L2 norm
-            logits = emb @ W.T + b
-            scores = (1.0 / (1.0 + np.exp(-logits))).ravel().astype(np.float32)
+        n = emb.shape[0]
+        n_tiles_total += n
 
-            if pi == 0:
-                print(f"  [debug] {slide_name}: {n} tiles, score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
+        # Run head: sigmoid(W @ emb + b) — no L2 norm
+        logits = emb @ W.T + b
+        scores = (1.0 / (1.0 + np.exp(-logits))).ravel().astype(np.float32)
 
-            mask = scores >= min_value
-            if mask.any():
-                pd.DataFrame({
-                    "slide_name": slide_name,
-                    "x": xs[mask],
-                    "y": ys[mask],
-                    "value": scores[mask],
-                }).to_csv(f, index=False, header=False)
-                n_rows += int(mask.sum())
+        if pi == 0:
+            print(f"  [debug] {slide_name}: {n} tiles, score range [{scores.min():.4f}, {scores.max():.4f}], mean {scores.mean():.4f}")
+
+        mask = scores >= min_value
+        df = pd.DataFrame({
+            "slide_name": slide_name,
+            "x": xs[mask],
+            "y": ys[mask],
+            "value": scores[mask],
+        })
+        n_rows += len(df)
 
     print(f"total tiles: {n_tiles_total}")
-    print(f"wrote {n_rows} rows -> {out} ({time.monotonic()-t0:.0f}s)")
+    print(f"wrote {n_rows} rows -> {out_dir} ({time.monotonic()-t0:.0f}s, {n_skipped} skipped)")
 
 
 def process_parquets(embed_dir: str, target_slides: set | None, id_to_name: dict,
@@ -206,56 +211,62 @@ def process_parquets(embed_dir: str, target_slides: set | None, id_to_name: dict
     else:
         target_parts = all_parts
 
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
     n_rows = 0
     n_target_total = 0
     t0 = time.monotonic()
-    with open(out, "w", newline="") as f:
-        f.write("slide_name,x,y,value\n")
-        for pi, part in enumerate(target_parts):
-            pf = pq.ParquetFile(str(part))
-            for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=4096):
-                sids = batch.column("slide_id").to_numpy(zero_copy_only=False)
-                xs = batch.column("x").to_numpy(zero_copy_only=False).astype(np.int32)
-                ys = batch.column("y").to_numpy(zero_copy_only=False).astype(np.int32)
-                emb = batch.column("embedding").values.to_numpy(zero_copy_only=False)
-                n = len(batch)
-                emb = emb.reshape(n, -1).astype(np.float32)
+    for pi, part in enumerate(target_parts):
+        out_path = out_dir / f"part_{pi:06d}.parquet"
+        if out_path.exists():
+            continue  # resume: part already done
+        pf = pq.ParquetFile(str(part))
+        part_rows = []
+        for batch in pf.iter_batches(columns=["slide_id", "x", "y", "embedding"], batch_size=4096):
+            sids = batch.column("slide_id").to_numpy(zero_copy_only=False)
+            xs = batch.column("x").to_numpy(zero_copy_only=False).astype(np.int32)
+            ys = batch.column("y").to_numpy(zero_copy_only=False).astype(np.int32)
+            emb = batch.column("embedding").values.to_numpy(zero_copy_only=False)
+            n = len(batch)
+            emb = emb.reshape(n, -1).astype(np.float32)
 
-                logits = emb @ W.T + b
-                scores = (1.0 / (1.0 + np.exp(-logits))).ravel().astype(np.float32)
+            logits = emb @ W.T + b
+            scores = (1.0 / (1.0 + np.exp(-logits))).ravel().astype(np.float32)
 
-                names = []
-                for sid in sids:
-                    h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
-                    names.append(id_to_name.get(h, h))
+            names = []
+            for sid in sids:
+                h = sid.hex() if isinstance(sid, (bytes, bytearray)) else str(sid)
+                names.append(id_to_name.get(h, h))
 
-                if target_slides is not None:
-                    mask_target = np.array([nm in target_slides for nm in names])
-                else:
-                    mask_target = np.ones(n, dtype=bool)
+            if target_slides is not None:
+                mask_target = np.array([nm in target_slides for nm in names])
+            else:
+                mask_target = np.ones(n, dtype=bool)
 
-                mask = (scores >= min_value) & mask_target
-                n_target = int(mask_target.sum())
-                n_target_total += n_target
-                if n_target > 0 and not hasattr(process_parquets, '_debugged'):
-                    process_parquets._debugged = True
-                    print(f"  [debug] first batch with target: {n_target}/{n} tiles")
-                    print(f"  [debug] target score range [{scores[mask_target].min():.4f}, {scores[mask_target].max():.4f}], mean {scores[mask_target].mean():.4f}")
-                if mask.any():
-                    pd.DataFrame({
-                        "slide_name": [names[i] for i in np.where(mask)[0]],
-                        "x": xs[mask],
-                        "y": ys[mask],
-                        "value": scores[mask],
-                    }).to_csv(f, index=False, header=False)
-                    n_rows += int(mask.sum())
+            mask = (scores >= min_value) & mask_target
+            n_target = int(mask_target.sum())
+            n_target_total += n_target
+            if n_target > 0 and not hasattr(process_parquets, '_debugged'):
+                process_parquets._debugged = True
+                print(f"  [debug] first batch with target: {n_target}/{n} tiles")
+                print(f"  [debug] target score range [{scores[mask_target].min():.4f}, {scores[mask_target].max():.4f}], mean {scores[mask_target].mean():.4f}")
+            if mask.any():
+                part_rows.append(pd.DataFrame({
+                    "slide_name": [names[i] for i in np.where(mask)[0]],
+                    "x": xs[mask],
+                    "y": ys[mask],
+                    "value": scores[mask],
+                }))
+                n_rows += int(mask.sum())
 
-            if (pi + 1) % 10 == 0:
-                print(f"  {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
+        df = pd.concat(part_rows, ignore_index=True) if part_rows else pd.DataFrame(columns=["slide_name", "x", "y", "value"])
+        df.to_parquet(out_path)
+        if (pi + 1) % 10 == 0:
+            print(f"  {pi+1}/{len(target_parts)} ({time.monotonic()-t0:.0f}s, {n_rows} rows)")
 
     if target_slides is not None:
         print(f"total target tiles: {n_target_total}")
-    print(f"wrote {n_rows} rows -> {out} ({time.monotonic()-t0:.0f}s)")
+    print(f"wrote {n_rows} rows -> {out_dir} ({time.monotonic()-t0:.0f}s)")
 
 
 def main():
@@ -263,7 +274,8 @@ def main():
     ap.add_argument("--embeddings", help="sharded dir with tiles/*.parquet")
     ap.add_argument("--pt-dir", help="dir with per-slide .pt files (simpler)")
     ap.add_argument("--slides", help="CSV with slide_name/slide_id column (subset)")
-    ap.add_argument("--out", default="heatmaps_tiles.csv")
+    ap.add_argument("--out", default="heatmaps_tiles",
+                    help="output dir: one .parquet per slide/part (resumable)")
     ap.add_argument("--min-value", type=float, default=0.5,
                     help="only write tiles with value >= this")
     ap.add_argument("--run", default=MODEL_RUN, help="MLflow run ID for model weights")
