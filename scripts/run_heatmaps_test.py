@@ -14,7 +14,7 @@ submit_job(
         "git clone https://github.com/jiribuchta/Tile-Morph-Clustering.git workdir",
         "cd workdir",
         "uv sync",
-        "echo 'slide_name\\n2019_08728-01-T' > one_slide.csv",
+        "printf 'slide_name\\n2019_08728-01-T\\n' > one_slide.csv",
         f"uv run python -u embeddings_to_heatmap.py --pt-dir '{PT_DIR}' --slides one_slide.csv --out {OUT} --min-value 0.5",
         f"ls -la {OUT}",
     ],
