@@ -177,6 +177,7 @@ def process_pt_files(pt_dir: Path, target_names: set | None, W: np.ndarray, b: n
             "y": ys[mask],
             "value": scores[mask],
         })
+        df.to_parquet(out_path)  # written even if empty: marks slide as done
         n_rows += len(df)
         if (pi + 1) % 25 == 0 or pi + 1 == len(pt_files):
             print(f"  {pi+1}/{len(pt_files)} slides, {n_rows} carcinoma rows ({time.monotonic()-t0:.0f}s)", flush=True)
