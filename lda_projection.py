@@ -24,6 +24,7 @@ def main():
     ap.add_argument("--tiles", required=True, help="heatmap CSV")
     ap.add_argument("--morphology", required=True, help="CSV with slide_name + morphology")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--out", default="lda_scores.csv", help="output CSV path")
     args = ap.parse_args()
 
     # Load morphology map
@@ -140,7 +141,7 @@ def main():
     # proj_lda is in the same order as X, which was built from pt_files in order
     # We need to map back to (slide_name, x, y)
     # Rebuild the mapping
-    out_csv = Path("lda_scores.csv")
+    out_csv = Path(args.out)
     rows = []
     idx = 0
     for pt_file in pt_files:
