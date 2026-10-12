@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import openslide
-from PIL import Image
+import pyvips
 
 
 def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
@@ -77,9 +77,9 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
         val = norm_vals[i]
         mask[dy:dy+dh, dx:dx+dw] = np.maximum(mask[dy:dy+dh, dx:dx+dw], val)
 
-    # Save as TIFF
-    img = Image.fromarray(mask, mode="L")
-    img.save(out_path, compression="tiff_lzw")
+    # Save as pyramid TIFF (openslide-compatible)
+    img = pyvips.Image.new_from_array(mask)
+    img.tiffsave(out_path, tile=True, pyramid=True, bigtiff=True, compression="lzw")
     print(f"Saved: {out_path} ({w}x{h})")
     print(f"  Value range: [{v_min:.3f}, {v_max:.3f}]")
 
