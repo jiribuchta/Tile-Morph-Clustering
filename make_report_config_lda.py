@@ -70,37 +70,39 @@ mask_retrievers:
         color:
           type: custom_colormap
           default:
-          - "#2166AC"   # 0 = 8500 (blue)
-          - "#43A2CA"   # 64
-          - "#F7F7F7"   # 128 (neutral)
-          - "#FCBBA1"   # 192
-          - "#B2182B"   # 255 = 8520 (red)
-          steps: 5
+          - ''             # value 0 = background (no tiles)
+          - "#2166AC"      # low = 8500 (ductal)
+          - "#F7F7F7"      # middle = ambiguous
+          - "#B2182B"      # high = 8520 (lobular)
+          steps: 4
           mode: qualitative
           interactive: true
           title: 'Morphology:'
-          continuous: true
+          continuous: false
         threshold:
           breaks:
-          - 0.0
-          - 1.0
+          - 0.003922     # value 0 = background
+          - 0.4          # below 40% of slide range = 8500
+          - 0.6          # above 60% = 8520
           mask:
-          - 1
-          - 1
+          - 0            # background: hidden
+          - 1            # 8500: shown
+          - 0            # middle: hidden by default
+          - 1            # 8520: shown
           interactive: false
-          inverted: false
-          maskOnly: false
-          toggleMask: false
-          title: Range
+          inverted: true
+          maskOnly: true
+          toggleMask: true
+          title: Categories
           min: 0
           max: 1
-          minGap: 0.1
+          minGap: 0.05
           step: null
           pips:
-            mode: range
-            values: 2
+            mode: count
+            values: 4
             density: 4
-            stepped: false
+            stepped: true
 
 save:
   _target_: report.save.MLFlowReportStorer
