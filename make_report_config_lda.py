@@ -32,8 +32,15 @@ def main():
         raise SystemExit(f"no .tiff files in {masks_dir}")
 
     names = [t.stem.replace("mask_", "") for t in tiffs]
-    paths = [wsi_path(n, args.wsi_root) for n in names]
-    paths_block = "\n".join(f"    - {p}" for p in paths)
+    # Generate glob patterns relative to source_dir for each slide
+    globs = []
+    for n in names:
+        year = n[:4]
+        mmddd = n[5:10]
+        month = mmddd[:2]
+        day = mmddd[2:]
+        globs.append(f"{year}/{month}/{day}/{n}/*.mrxs")
+    globs_block = "\n".join(f"    - \"{g}\"" for g in globs)
 
     cfg = f"""# xOpat report config: LDA morphology masks (continuous grayscale)
 #
@@ -51,8 +58,8 @@ title: LDA Morphology Projection - MAMMAPRINT
 background:
   _target_: report.masks.BasicImageRetriever
   source_dir: /mnt/bioptic_tree
-  paths:
-{paths_block}
+  globs:
+{globs_block}
   layer_name: MAMMAPRINT WSI (MIRAX)
 
 mask_retrievers:
