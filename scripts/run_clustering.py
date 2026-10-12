@@ -1,6 +1,6 @@
 from kube_jobs import storage, submit_job
 
-OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/tile_clustering"
+OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/tile_clustering_pca"
 TILES = "/mnt/projects/breast_cancer/tile_morph_clustering/test_heatmaps.csv"
 MORPH = "/mnt/projects/breast_cancer/tile_morph_clustering/slide_list_balanced.csv"
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Val"
