@@ -22,6 +22,50 @@ def read_tiles(p):
     return pd.read_csv(p) if str(p).endswith(".csv") else pd.read_parquet(p)
 
 
+def evaluate_scores(df, morphology_csv):
+    """Slide-level eval of tile scores vs morphology (8500 vs 8520).
+
+    Reports per-morphology means, AUC and accuracy for two slide
+    aggregations: plain tile mean and top-10% tile mean (focal signal).
+    """
+    from sklearn.metrics import roc_auc_score, roc_curve
+
+    mdf = pd.read_csv(morphology_csv)
+    if "slide_name" not in mdf.columns:
+        mdf = mdf.rename(columns={"slide_id": "slide_name"})
+    mdf["morphology"] = mdf["morphology"].astype(str).str.replace(" ", "")
+    mdf = mdf[mdf["morphology"].isin(["8500", "8520"])]
+    label = dict(zip(mdf["slide_name"], mdf["morphology"], strict=True))
+    df = df.copy()
+    df["morph"] = df["slide_name"].map(label)
+    df = df.dropna(subset=["morph"])
+    if df.empty:
+        print("[warn] no morphology labels matched the scored slides")
+        return
+
+    def top_mean(v):
+        k = max(1, int(np.ceil(0.1 * len(v))))
+        return np.sort(v)[-k:].mean()
+
+    slides = df.groupby("slide_name").agg(mean=("value", "mean"), morph=("morph", "first"))
+    slides["top10"] = df.groupby("slide_name")["value"].apply(top_mean)
+    y = (slides["morph"] == "8520").astype(int)
+
+    print(f"\n--- Generalization check ({len(slides)} slides) ---")
+    for m, g in slides.groupby("morph"):
+        print(f"  {m}: n={len(g)}, mean tile score={g['mean'].mean():.3f}")
+    for col in ("mean", "top10"):
+        s = slides[col]
+        auc = roc_auc_score(y, s)
+        acc0 = ((s > 0) == (y == 1)).mean()
+        fpr, tpr, thr = roc_curve(y, s)
+        bal = (tpr + 1 - fpr) / 2  # balanced accuracy along the ROC curve
+        ib = int(np.argmax(bal))
+        acc_best = ((s > thr[ib]) == (y == 1)).mean()
+        print(f"  [{col}] AUC={auc:.3f}, acc@0={acc0:.1%}, "
+              f"best-thr acc={acc_best:.1%} (thr={thr[ib]:.3f}, bal-acc={bal[ib]:.1%})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pt-dir", required=True)
@@ -87,28 +131,7 @@ def main():
 
         # --- Evaluation against morphology labels, if given ---
         if args.morphology:
-            mdf = pd.read_csv(args.morphology)
-            if "slide_name" not in mdf.columns:
-                mdf = mdf.rename(columns={"slide_id": "slide_name"})
-            mdf["slide_name"] = mdf["slide_name"].astype(str)
-            mdf["morphology"] = mdf["morphology"].astype(str).str.replace(" ", "")
-            label = dict(zip(mdf["slide_name"], mdf["morphology"]))
-            out_df["morph"] = out_df["slide_name"].map(label)
-            ev = out_df.dropna(subset=["morph"])
-            if ev.empty:
-                print("[warn] no morphology labels matched the scored slides")
-            else:
-                slide_mean = ev.groupby("slide_name").agg(mean=("value", "mean"), morph=("morph", "first"))
-                y = (slide_mean["morph"] == "8520").astype(int)
-                s = slide_mean["mean"]
-                from sklearn.metrics import roc_auc_score
-                auc = roc_auc_score(y, s)
-                acc = ((s > 0) == (y == 1)).mean()
-                print(f"\n--- Generalization check ({len(slide_mean)} slides) ---")
-                for m, g in slide_mean.groupby("morph"):
-                    print(f"  {m}: n={len(g)}, mean LDA score={g['mean'].mean():.3f}")
-                print(f"  Slide-level AUC (8520 vs 8500): {auc:.3f}")
-                print(f"  Slide-level accuracy (score > 0): {acc:.1%}")
+            evaluate_scores(out_df, args.morphology)
         return
 
     # --- Training mode (requires morphology labels) ---
@@ -120,7 +143,7 @@ def main():
     morph_df["morphology"] = morph_df["morphology"].astype(str).str.replace(" ", "")
     # keep only the two target classes (others would land in "not 8500" = 8520)
     morph_df = morph_df[morph_df["morphology"].isin(["8500", "8520"])]
-    morph_map = dict(zip(morph_df["slide_name"], morph_df["morphology"]))
+    morph_map = dict(zip(morph_df["slide_name"], morph_df["morphology"], strict=True))
     print(f"Morphology: {morph_df['morphology'].value_counts().to_dict()}")
 
     # Load tile filter
@@ -213,10 +236,10 @@ def main():
     # Subsample for speed (LDA is O(n*d^2))
     n_sub = min(100_000, X.shape[0])
     idx = np.random.choice(X.shape[0], n_sub, replace=False)
-    lda = LinearDiscriminantAnalysis()
+    lda = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto", priors=(0.5, 0.5))
     lda.fit(X[idx], y[idx])
-    # Project all
-    proj_lda = lda.transform(X)
+    # decision_function instead of transform: 'lsqr' (needed for shrinkage) has no transform
+    proj_lda = lda.decision_function(X)
     proj_lda_8500 = proj_lda[y == 0]
     proj_lda_8520 = proj_lda[y == 1]
     print(f"  8500: mean={proj_lda_8500.mean():.6f}, std={proj_lda_8500.std():.6f}")
