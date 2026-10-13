@@ -1,15 +1,15 @@
 from kube_jobs import storage, submit_job
 
-TILES = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores.csv"
+TILES = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores_v5_095_val.csv"
 WSI_ROOT = "/mnt/bioptic_tree"
-OUT_DIR = "/mnt/projects/breast_cancer/tile_morph_clustering/masks"
+OUT_DIR = "/mnt/projects/breast_cancer/tile_morph_clustering/masks_v5_095_val"
 
 submit_job(
     job_name="tile-morph-masks",
     username="jiribuchta",
     image="cerit.io/rationai/base:2.0.6",
     cpu=8,
-    memory="64Gi",
+    memory="16Gi",
     public=False,
     script=[
         "git clone https://github.com/jiribuchta/Tile-Morph-Clustering.git workdir",
