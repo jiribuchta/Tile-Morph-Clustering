@@ -56,7 +56,9 @@ def main():
         print(f"Scoring {len(pt_files)} slides...")
 
         rows = []
-        for pt_file in tqdm(pt_files, desc="scoring", unit="slide"):
+        for i, pt_file in enumerate(pt_files):
+            if (i + 1) % 25 == 0 or i + 1 == len(pt_files):
+                print(f"  {i+1}/{len(pt_files)} slides scored ({len(rows)} rows)", flush=True)
             slide_name = pt_file.stem
             slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
             if slide_tiles.empty:
