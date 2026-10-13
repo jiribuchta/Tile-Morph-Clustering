@@ -14,7 +14,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
 from scipy import stats
 
 
@@ -31,6 +30,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--min-tile-value", type=float, default=0.0,
                     help="only use tiles with carcinoma score >= this (e.g. 0.9)")
+    ap.add_argument("--max-tiles-per-slide", type=int, default=0,
+                    help="training: random cap of tiles per slide (memory; 0 = all)")
     ap.add_argument("--out", default="lda_scores.csv", help="output CSV path")
     ap.add_argument("--save-direction", default=None, help="save LDA direction .npy (for scoring new slides)")
     ap.add_argument("--load-direction", default=None, help="load LDA direction .npy to score new slides (skip training)")
@@ -114,6 +115,11 @@ def main():
     if not args.morphology:
         raise SystemExit("--morphology is required for training (or use --load-direction)")
     morph_df = pd.read_csv(args.morphology)
+    if "slide_name" not in morph_df.columns:
+        morph_df = morph_df.rename(columns={"slide_id": "slide_name"})
+    morph_df["morphology"] = morph_df["morphology"].astype(str).str.replace(" ", "")
+    # keep only the two target classes (others would land in "not 8500" = 8520)
+    morph_df = morph_df[morph_df["morphology"].isin(["8500", "8520"])]
     morph_map = dict(zip(morph_df["slide_name"], morph_df["morphology"]))
     print(f"Morphology: {morph_df['morphology'].value_counts().to_dict()}")
 
@@ -130,14 +136,19 @@ def main():
     pt_files = sorted(p for p in pt_dir.glob("*.pt") if p.stem in tile_slides)
     print(f"Loading {len(pt_files)} .pt files...")
 
+    tiles_by_slide = dict(tuple(tiles_df.groupby("slide_name")))
     all_embs = []
     all_labels = []  # 0 = 8500, 1 = 8520
+    kept_tiles = []   # (slide_name, x/y rows) aligned with X rows, for the scores CSV
+    rng = np.random.default_rng(args.seed)
     t0 = time.monotonic()
-    for pt_file in tqdm(pt_files, desc="loading", unit="file"):
+    for i, pt_file in enumerate(pt_files):
+        if (i + 1) % 25 == 0 or i + 1 == len(pt_files):
+            print(f"  loaded {i+1}/{len(pt_files)} slides ({len(all_labels)} tiles)", flush=True)
         slide_name = pt_file.stem
         if slide_name not in morph_map:
             continue
-        label = 0 if str(morph_map[slide_name]) == "8500" else 1
+        label = 0 if morph_map[slide_name] == "8500" else 1
 
         emb = torch.load(pt_file, map_location="cpu", weights_only=False)
         if isinstance(emb, dict):
@@ -148,14 +159,20 @@ def main():
         emb = emb.numpy().astype(np.float32)
 
         # Filter to carcinoma tiles
-        slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
-        if slide_tiles.empty:
+        slide_tiles = tiles_by_slide.get(slide_name)
+        if slide_tiles is None or slide_tiles.empty:
             continue
         n_keep = min(emb.shape[0], len(slide_tiles))
         emb = emb[:n_keep]
+        slide_tiles = slide_tiles.iloc[:n_keep]
+        if args.max_tiles_per_slide and n_keep > args.max_tiles_per_slide:
+            sel = np.sort(rng.choice(n_keep, args.max_tiles_per_slide, replace=False))
+            emb = emb[sel]
+            slide_tiles = slide_tiles.iloc[sel]
 
         all_embs.append(emb)
         all_labels.extend([label] * emb.shape[0])
+        kept_tiles.append((slide_name, slide_tiles[["x", "y"]]))
 
     X = np.vstack(all_embs)
     y = np.array(all_labels)
@@ -178,7 +195,7 @@ def main():
     proj_8500 = proj[y == 0]
     proj_8520 = proj[y == 1]
 
-    print(f"\n--- Mean direction projection ---")
+    print("\n--- Mean direction projection ---")
     print(f"  8500: mean={proj_8500.mean():.6f}, std={proj_8500.std():.6f}")
     print(f"  8520: mean={proj_8520.mean():.6f}, std={proj_8520.std():.6f}")
     t_stat, p_value = stats.ttest_1samp(proj_8520 - proj_8500, 0) if len(proj_8500) == len(proj_8520) else (stats.ttest_ind(proj_8500, proj_8520))
@@ -191,7 +208,7 @@ def main():
 
     # --- Method 2: LDA (proper supervised) ---
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-    print(f"\n--- LDA ---")
+    print("\n--- LDA ---")
     t0 = time.monotonic()
     # Subsample for speed (LDA is O(n*d^2))
     n_sub = min(100_000, X.shape[0])
@@ -211,7 +228,7 @@ def main():
     print(f"  ({time.monotonic()-t0:.0f}s)")
 
     # --- Summary ---
-    print(f"\n--- Conclusion ---")
+    print("\n--- Conclusion ---")
     # Effect size (Cohen's d) for LDA projection
     d = (proj_lda_8520.mean() - proj_lda_8500.mean()) / np.sqrt((proj_lda_8500.std()**2 + proj_lda_8520.std()**2) / 2)
     print(f"  Cohen's d (LDA): {d:.4f}")
@@ -239,14 +256,8 @@ def main():
     out_csv = Path(args.out)
     rows = []
     idx = 0
-    for pt_file in pt_files:
-        slide_name = pt_file.stem
-        if slide_name not in morph_map:
-            continue
-        slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
-        if slide_tiles.empty:
-            continue
-        for _, trow in slide_tiles.iterrows():
+    for slide_name, st in kept_tiles:
+        for _, trow in st.iterrows():
             if idx < len(proj_lda):
                 rows.append((slide_name, int(trow["x"]), int(trow["y"]), proj_lda[idx].item()))
                 idx += 1
