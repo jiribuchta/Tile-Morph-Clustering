@@ -186,12 +186,15 @@ def main():
         if slide_tiles is None or slide_tiles.empty:
             continue
         n_keep = min(emb.shape[0], len(slide_tiles))
-        emb = emb[:n_keep]
-        slide_tiles = slide_tiles.iloc[:n_keep]
         if args.max_tiles_per_slide and n_keep > args.max_tiles_per_slide:
             sel = np.sort(rng.choice(n_keep, args.max_tiles_per_slide, replace=False))
-            emb = emb[sel]
+            emb = emb[sel]  # fancy index = copy, full-slide base is freed
             slide_tiles = slide_tiles.iloc[sel]
+        else:
+            # .copy() is load-bearing: a view would pin the FULL-slide array in
+            # all_embs (OOM'd at 64Gi with ~3GB of actual tiles)
+            emb = emb[:n_keep].copy()
+            slide_tiles = slide_tiles.iloc[:n_keep]
 
         all_embs.append(emb)
         all_labels.extend([label] * emb.shape[0])
