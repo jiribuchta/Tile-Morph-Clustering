@@ -59,10 +59,10 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
     # Get tile size in level-1 pixels (default 224)
     tile_size = 224
 
-    # Fixed global scale from training stats (8500 mean=-1.65, 8520 mean=+1.54,
-    # std ~= 1.0). Score -3..+3 maps to 0..255; same pixel value = same meaning
+    # Fixed global scale (v5 training stats: 8500 mean=-1.46, 8520 mean=+1.37,
+    # std ~= 1.8). Score -4..+4 maps to 0..255; same pixel value = same meaning
     # on every slide. 128 (white) = genuinely ambiguous.
-    SCALE = 3.0
+    SCALE = 4.0
     vals = slide_tiles["value"].values
 
     for i, (_, row) in enumerate(slide_tiles.iterrows()):

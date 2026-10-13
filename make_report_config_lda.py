@@ -82,8 +82,8 @@ mask_retrievers:
         threshold:
           breaks:
           - 0.003922     # value 0 = background
-          - 0.4          # below 40% of slide range = 8500
-          - 0.6          # above 60% = 8520
+          - 0.43          # below ~ -0.6 LDA units = 8500
+          - 0.57          # above ~ +0.6 = 8520
           mask:
           - 0            # background: hidden
           - 1            # 8500: shown
