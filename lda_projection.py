@@ -27,7 +27,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pt-dir", required=True)
     ap.add_argument("--tiles", required=True, help="heatmap CSV")
-    ap.add_argument("--morphology", required=True, help="CSV with slide_name + morphology")
+    ap.add_argument("--morphology", default=None, help="CSV with slide_name + morphology (labels; optional in scoring mode)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--min-tile-value", type=float, default=0.0,
                     help="only use tiles with carcinoma score >= this (e.g. 0.9)")
@@ -38,8 +38,14 @@ def main():
 
     # --- Load-direction mode: score new slides with a saved direction ---
     if args.load_direction:
-        direction = np.load(args.load_direction)
-        print(f"Loaded LDA direction ({direction.shape[0]} dims) from {args.load_direction}")
+        data = np.load(args.load_direction)
+        if isinstance(data, np.ndarray):
+            # legacy .npy: no calibration -> scores on unit-cosine scale (masks will be washed out)
+            direction, scale, offset = data, 1.0, 0.0
+            print("[warn] legacy .npy direction: uncalibrated scores; retrain with --save-direction to get .npz")
+        else:
+            direction, scale, offset = data["direction"], float(data["scale"]), float(data["offset"])
+        print(f"Loaded LDA direction ({direction.shape[0]} dims, scale={scale:.3f}, offset={offset:.3f})")
 
         tiles_df = read_tiles(args.tiles)
         if args.min_tile_value > 0:
@@ -68,15 +74,41 @@ def main():
             norms = np.linalg.norm(emb, axis=1, keepdims=True)
             norms[norms == 0] = 1
             emb /= norms
-            scores = emb @ direction
+            scores = emb @ direction * scale + offset
             for i, (_, trow) in enumerate(slide_tiles.iterrows()):
                 rows.append((slide_name, int(trow["x"]), int(trow["y"]), scores[i].item()))
 
-        pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"]).to_csv(args.out, index=False)
+        out_df = pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"])
+        out_df.to_csv(args.out, index=False)
         print(f"Saved {len(rows)} tiles to {args.out}")
+
+        # --- Evaluation against morphology labels, if given ---
+        if args.morphology:
+            mdf = pd.read_csv(args.morphology)
+            mdf["slide_name"] = mdf["slide_name"].astype(str)
+            mdf["morphology"] = mdf["morphology"].astype(str)
+            label = dict(zip(mdf["slide_name"], mdf["morphology"]))
+            out_df["morph"] = out_df["slide_name"].map(label)
+            ev = out_df.dropna(subset=["morph"])
+            if ev.empty:
+                print("[warn] no morphology labels matched the scored slides")
+            else:
+                slide_mean = ev.groupby("slide_name").agg(mean=("value", "mean"), morph=("morph", "first"))
+                y = (slide_mean["morph"] == "8520").astype(int)
+                s = slide_mean["mean"]
+                from sklearn.metrics import roc_auc_score
+                auc = roc_auc_score(y, s)
+                acc = ((s > 0) == (y == 1)).mean()
+                print(f"\n--- Generalization check ({len(slide_mean)} slides) ---")
+                for m, g in slide_mean.groupby("morph"):
+                    print(f"  {m}: n={len(g)}, mean LDA score={g['mean'].mean():.3f}")
+                print(f"  Slide-level AUC (8520 vs 8500): {auc:.3f}")
+                print(f"  Slide-level accuracy (score > 0): {acc:.1%}")
         return
 
-    # --- Training mode ---
+    # --- Training mode (requires morphology labels) ---
+    if not args.morphology:
+        raise SystemExit("--morphology is required for training (or use --load-direction)")
     morph_df = pd.read_csv(args.morphology)
     morph_map = dict(zip(morph_df["slide_name"], morph_df["morphology"]))
     print(f"Morphology: {morph_df['morphology'].value_counts().to_dict()}")
@@ -188,13 +220,16 @@ def main():
     else:
         print("  -> Large difference. Strong signal.")
 
-    # --- Save LDA direction ---
+    # --- Save LDA direction + calibration to lda.transform scale ---
     if args.save_direction:
-        # For binary LDA, coef_ has shape (1, n_features); direction = coef_[0]
         direction = lda.coef_[0]
-        direction /= np.linalg.norm(direction)
-        np.save(args.save_direction, direction)
-        print(f"\nSaved LDA direction to {args.save_direction}")
+        direction = direction / np.linalg.norm(direction)
+        # linear map unit-projection -> lda.transform score, so scoring mode
+        # produces values on the same scale the masks expect
+        proj_unit = (X @ direction).ravel()
+        a, b = np.polyfit(proj_unit, proj_lda.ravel(), 1)
+        np.savez(args.save_direction, direction=direction, scale=a, offset=b)
+        print(f"\nSaved LDA direction (+calibration) to {args.save_direction}")
 
     # --- Save LDA projections to CSV ---
     out_csv = Path(args.out)
