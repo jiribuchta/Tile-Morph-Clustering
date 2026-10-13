@@ -3,7 +3,7 @@ from kube_jobs import storage, submit_job
 
 # Score Val with the v5 direction (trained on Train) -> held-out generalization check
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Val"
-TILES = "/mnt/projects/breast_cancer/tile_morph_clustering/test_heatmaps.csv"
+TILES = "/mnt/projects/breast_cancer/bc/heatmaps/virchow2_heatmaps_val"
 DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction_v5_095_train.npz"
 MORPH = "/mnt/projects/breast_cancer/tile_morph_clustering/slide_list_balanced.csv"
 OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores_v5_095_val.csv"
