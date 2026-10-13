@@ -85,8 +85,10 @@ def main():
         # --- Evaluation against morphology labels, if given ---
         if args.morphology:
             mdf = pd.read_csv(args.morphology)
+            if "slide_name" not in mdf.columns:
+                mdf = mdf.rename(columns={"slide_id": "slide_name"})
             mdf["slide_name"] = mdf["slide_name"].astype(str)
-            mdf["morphology"] = mdf["morphology"].astype(str)
+            mdf["morphology"] = mdf["morphology"].astype(str).str.replace(" ", "")
             label = dict(zip(mdf["slide_name"], mdf["morphology"]))
             out_df["morph"] = out_df["slide_name"].map(label)
             ev = out_df.dropna(subset=["morph"])

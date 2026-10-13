@@ -4,7 +4,7 @@ PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Tr
 TILES = "/mnt/projects/breast_cancer/bc/heatmaps/virchow2_heatmaps_train"
 DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction_v3.npz"
 # CSV with slide_name + morphology columns for ALL train slides (for evaluation)
-MORPH = "/mnt/projects/breast_cancer/tile_morph_clustering/train_morphology.csv"
+MORPH = "/mnt/projects/breast_cancer/bc/dataframe.csv"
 OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/train_scores.csv"
 
 submit_job(
