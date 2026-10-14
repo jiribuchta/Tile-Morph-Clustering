@@ -12,13 +12,13 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-import openslide
 import pandas as pd
+import openslide
 import pyvips
 
 
-def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str, level: int = 1):
-    """Create a mask TIFF from tile scores at the given WSI pyramid level."""
+def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
+    """Create a full-resolution (level 0) mask TIFF from tile scores."""
     df = pd.read_csv(csv_path) if str(csv_path).endswith(".csv") else pd.read_parquet(csv_path)
     slide_tiles = df[df["slide_name"] == slide_name]
     if slide_tiles.empty:
@@ -39,20 +39,25 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str, leve
         print(f"[skip] WSI not found in {slide_dir}")
         return
 
-    # Get WSI dimensions at the requested level. Tile coords are in level-1
-    # pixels, so scale = how much bigger this level's pixels are than level 1's.
+    # Get full WSI dimensions (level 0)
     slide = openslide.OpenSlide(str(wsi_path))
-    w, h = slide.level_dimensions[level]
-    scale = slide.level_downsamples[level] / slide.level_downsamples[1]
+    w, h = slide.dimensions
     slide.close()
-    print(f"WSI: {w}x{h} (level {level})")
+    print(f"WSI: {w}x{h}")
 
-    # Create mask at this level's resolution (uint8 to save memory)
+    # Tile coords are in level-1 space. Scale to level 0.
+    # Level 0 is 2x level 1 for most scanners.
+    scale = w / (w / 2)  # = 2, but let's be explicit
+    # Actually: level 0 width = w, level 1 width = w/2
+    # Tile x is in level-1 pixels, so level-0 x = x * (w / (w/2)) = x * 2
+    scale_x = 2.0
+    scale_y = 2.0
+
+    # Create mask at level 0 resolution (uint8 to save memory)
     mask = np.zeros((h, w), dtype=np.uint8)
 
-    # Tile size in level-1 pixels (default 224)
+    # Get tile size in level-1 pixels (default 224)
     tile_size = 224
-    scale_x = scale_y = scale
 
     # Fixed global scale (v5 training stats: 8500 mean=-1.46, 8520 mean=+1.37,
     # std ~= 1.8). Score -4..+4 maps to 0..255; same pixel value = same meaning
@@ -84,11 +89,9 @@ def main():
     ap.add_argument("--wsi-root", required=True)
     ap.add_argument("--slide", required=True, help="slide name")
     ap.add_argument("--out", required=True, help="output .tiff path")
-    ap.add_argument("--level", type=int, default=1,
-                    help="mask resolution = WSI pyramid level (1 = quarter pixels of level 0)")
     args = ap.parse_args()
 
-    make_mask(args.tiles, args.slide, args.wsi_root, args.out, args.level)
+    make_mask(args.tiles, args.slide, args.wsi_root, args.out)
 
 
 if __name__ == "__main__":
