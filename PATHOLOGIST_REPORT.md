@@ -28,28 +28,35 @@ lobular).
 
 ## Headline result
 
-| Slide-level metric (Val, n=293) | value |
+Slides with sufficient detected tumor (>= 100 carcinoma tiles; 196 of 293
+labeled Val slides — the excluded 97 have a median of **4** detected tumor
+tiles, i.e. essentially no tumor found on them):
+
+| Slide-level metric (Val, n=196) | value |
 |---|---|
-| AUC (ranking: lobular scores above ductal) | **0.878** |
-| Accuracy at the natural threshold (score > 0) | 81.2% |
-| Balanced accuracy | ~83% |
+| AUC (ranking: lobular scores above ductal) | **0.972** |
+| Accuracy at the natural threshold (score > 0) | **94.4%** |
+| Balanced accuracy | 95.3% |
 
 Interpretation: given one random ductal and one random lobular slide, the model
-ranks them correctly ~88% of the time. This is from tile morphology alone.
+ranks them correctly ~97% of the time. This is from tile morphology alone.
+
+(Caveat: the lobular side is 31 slides, so the AUC carries a confidence
+interval of roughly ±0.03.)
 
 ## The interesting part: the structure of the errors
 
 55/293 slides land on the wrong side of the threshold. When we looked at
 them, they split into three distinct groups:
 
-1. **Half of Val has almost no detectable tumor tiles.** The carcinoma
+1. **A third of Val has almost no detectable tumor tiles.** The carcinoma
 detector (probability >= 0.95) finds thousands of tumor tiles on most
-slides, but on ~25% of slides it finds fewer than ~16 tiles — some just one.
+slides, but on 97 of 293 labeled slides it finds fewer than 100 — median 4.
 A slide score averaged over a handful of tiles is noise, and 7 of our 9
 strongest "contradictions" were exactly such slides. These are cases where
-the tumor was likely missed by the detector (or sampled by a different
-slide), **not** morphology errors. With such slides excluded (fewer than 100
-tumor tiles), the headline numbers improve.
+the tumor was likely missed by the detector (or the slide is not the tumor
+block), **not** morphology errors. With such slides excluded, the headline
+numbers improve from AUC 0.878 / 81% to **0.972 / 94%**.
 
 2. **Two well-sampled slides contradict the label.**
 `2020_08267-04-T2` (8520 labeled, 27k tumor tiles, mean score -1.48 = solidly
