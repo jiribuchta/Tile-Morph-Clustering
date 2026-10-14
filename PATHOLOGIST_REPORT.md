@@ -49,14 +49,16 @@ interval of roughly ±0.03.)
 55/293 slides land on the wrong side of the threshold. When we looked at
 them, they split into three distinct groups:
 
-1. **A third of Val has almost no detectable tumor tiles.** The carcinoma
-detector (probability >= 0.95) finds thousands of tumor tiles on most
-slides, but on 97 of 293 labeled slides it finds fewer than 100 — median 4.
-A slide score averaged over a handful of tiles is noise, and 7 of our 9
-strongest "contradictions" were exactly such slides. These are cases where
-the tumor was likely missed by the detector (or the slide is not the tumor
-block), **not** morphology errors. With such slides excluded, the headline
-numbers improve from AUC 0.878 / 81% to **0.972 / 94%**.
+1. **A third of Val slides are negative blocks, correctly empty.** Slides
+whose suffix is `N` (negative sample per the bioptic-tree naming scheme;
+`T` = tumor, `M` = metastases) carry almost no carcinoma tiles — median 4
+detected — because there is no tumor on them. The carcinoma detector is
+*right*; these slides simply inherit their case's 8500/8520 label via the
+record-prefix join and so landed in the eval. Averaging a handful of tiles
+produced noise scores, and 7 of our 9 strongest "contradictions" were
+exactly such slides. With slides lacking sufficient detected tumor (fewer
+than 100 tiles) excluded, the headline numbers improve from AUC 0.878 / 81%
+to **0.972 / 94%**.
 
 2. **Two well-sampled slides contradict the label.**
 `2020_08267-04-T2` (8520 labeled, 27k tumor tiles, mean score -1.48 = solidly
@@ -92,9 +94,10 @@ Three questions per slide:
    growth, loss of E-cadherin-type discohesion)?
 2. **The contradictions** — for the two slides above: is the slide genuinely
    the labeled morphology (model error), a mixed tumor, or mislabeled?
-3. **The empty slides** — pick a few slides where the mask shows almost no
-   colored tiles: is there actually tumor on them? (These test the carcinoma
-   detector, not the morphology axis.)
+3. **The empty slides** — the naming scheme says these are mostly `N`
+(negative) blocks; if any mask on an `N` slide shows substantial colored
+tumor regions, that is a carcinoma-detector false positive worth checking.
+`M` (metastases) slides would be the opposite check.
 
 ## Bonus observation
 
