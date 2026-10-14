@@ -22,11 +22,13 @@ def read_tiles(p):
     return pd.read_csv(p) if str(p).endswith(".csv") else pd.read_parquet(p)
 
 
-def evaluate_scores(df, morphology_csv):
+def evaluate_scores(df, morphology_csv, min_tiles=100):
     """Slide-level eval of tile scores vs morphology (8500 vs 8520).
 
     Reports per-morphology means, AUC and accuracy for two slide
     aggregations: plain tile mean and top-10% tile mean (focal signal).
+    Slides with < min_tiles scored tiles are excluded: their mean is noise
+    (25% of Val slides have <= 16 carcinoma tiles at the 0.95 threshold).
     """
     from sklearn.metrics import roc_auc_score, roc_curve
 
@@ -47,8 +49,19 @@ def evaluate_scores(df, morphology_csv):
         k = max(1, int(np.ceil(0.1 * len(v))))
         return np.sort(v)[-k:].mean()
 
+    counts = df.groupby("slide_name")["value"].size()
+    n_labeled = len(counts)
+    keep = counts[counts >= min_tiles].index
+    df = df[df["slide_name"].isin(keep)]
+    if n_labeled > len(keep):
+        dropped = counts[counts < min_tiles]
+        print(f"[warn] {len(dropped)}/{n_labeled} labeled slides excluded: "
+              f"< {min_tiles} carcinoma tiles (median {int(dropped.median())} tiles)"
+              f" -- carcinoma detector found almost nothing on them")
+
     slides = df.groupby("slide_name").agg(mean=("value", "mean"), morph=("morph", "first"))
     slides["top10"] = df.groupby("slide_name")["value"].apply(top_mean)
+    slides["n_tiles"] = counts[slides.index]
     y = (slides["morph"] == "8520").astype(int)
 
     print(f"\n--- Generalization check ({len(slides)} slides) ---")

@@ -15,8 +15,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scores", required=True, help="CSV: slide_name, x, y, value")
     ap.add_argument("--morphology", required=True, help="CSV with slide_name/slide_id + morphology")
+    ap.add_argument("--min-tiles", type=int, default=100,
+                    help="exclude slides with fewer scored tiles (their mean is noise)")
     args = ap.parse_args()
-    evaluate_scores(pd.read_csv(args.scores), args.morphology)
+    evaluate_scores(pd.read_csv(args.scores), args.morphology, args.min_tiles)
 
 
 if __name__ == "__main__":
