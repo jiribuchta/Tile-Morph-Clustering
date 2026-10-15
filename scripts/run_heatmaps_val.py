@@ -1,5 +1,6 @@
 from kube_jobs import storage, submit_job
 
+
 # Carcinoma heatmaps for ALL Val slides (resumable: existing per-slide parquets skipped)
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Val"
 OUT = "/mnt/projects/breast_cancer/bc/heatmaps/virchow2_heatmaps_val"

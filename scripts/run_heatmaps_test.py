@@ -1,5 +1,6 @@
 from kube_jobs import storage, submit_job
 
+
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Train"
 OUT = "/mnt/projects/breast_cancer/bc/heatmaps/test_one_slide"
 

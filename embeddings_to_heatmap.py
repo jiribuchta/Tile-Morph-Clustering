@@ -29,6 +29,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import torch
 
+
 TRACKING_URI = "http://mlflow.rationai-mlflow:5000"
 # Virchow2 (Frozen) selected model from BRC-A-29
 MODEL_RUN = "b760612d87884b4a866fea9f460ed214"
@@ -60,7 +61,7 @@ def load_head_weights(run_id: str) -> tuple[np.ndarray, np.ndarray]:
     else:
         candidates = [f for f in art.rglob("*") if f.suffix in (".ckpt", ".pt", ".pth")]
         if not candidates:
-            print(f"Available artifacts:")
+            print("Available artifacts:")
             for f in sorted(art.rglob("*")):
                 if f.is_file():
                     print(f"  {f.relative_to(art)}")

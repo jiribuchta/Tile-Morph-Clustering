@@ -38,21 +38,12 @@ level-1 pixel space). The current main line:
    score ±4 maps to 0–255). One slide per call; `scripts/run_masks.py`
    loops a whole CSV on the cluster.
 6. **xOpat report** — `make_report_config_lda.py` builds the report YAML
-   from a masks dir; `submit_report_job.py` submits the serving job.
+   from a masks dir (the generated configs live on the cluster under
+   `tile_morph_clustering/`); submit the serving job from there.
 
-`make_heatmap_thumb.py` (quick overlay thumbnails), `show_masks.py` (mask
-previews), `make_slide_list.py`, `match_morphology.py`, `check_csv.py`
-(slide-list/CSV helpers) are small utilities used along the way.
-
-## Track A — unsupervised clustering (exploratory, mostly superseded)
-
-KMeans on tile embeddings directly (`cluster_tiles.py`), on
-carcinoma-region mean embeddings (`cluster_regions.py`, caches
-`X_regions.npy`), and on slide-level means (`slide_level_cluster.py`).
-`scripts/k_sweep.py` sweeps k; `scripts/eval_morphology.py` scores cluster
-assignments against morphology. `make_masks.py` / `write_masks.py` /
-`make_report_config.py` / `make_montage.py` were the cluster-mask era
-reporting tools, kept for reference.
+`make_heatmap_thumb.py` and `show_masks.py` (quick previews) and the
+slide-list/morphology helpers were removed with the k-means era — see git
+history if you need them back.
 
 ## Data locations (cluster mounts)
 
@@ -77,17 +68,15 @@ pipeline script, with the DATA/PROJECTS/BIOPTIC_TREE mounts attached.
 Everything cluster-run uses plain `print` progress (tqdm doesn't render in
 job logs) and is **resumable** per slide — keep both properties when editing.
 
-Monitoring: pods land in namespace `rationai-jobs-ns`;
-`scripts/pods_csv.sh [out.csv]` dumps running/pending pods with GPU info
-(default output `running_pending_jobs.csv`).
+Monitoring: pods land in namespace `rationai-jobs-ns`.
 
 ## Layout notes
 
 - `ml/`, `configs/`, `preprocessing/` — PyTorch Lightning + Hydra + MLflow
   template scaffolding, currently unused by the pipeline but kept for
   planned integration.
-- `report_conf/` — generated xOpat report configs.
-- Environment: `uv` (`uv sync`, `uv run python ...`); ruff + mypy configured.
+- The unsupervised k-means track (tile/region/slide clustering and its
+  mask/report tools) was removed — git history has it if ever needed.
 
 ## Results so far
 
