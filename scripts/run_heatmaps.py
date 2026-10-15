@@ -1,10 +1,10 @@
 from kube_jobs import storage, submit_job
 
-PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Val"
-OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/heatmaps_val"
+PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Train"
+OUT = "/mnt/projects/breast_cancer/bc/heatmaps/virchow2_heatmaps_train"
 
 submit_job(
-    job_name="tile-morph-heatmaps",
+    job_name="tile-morph-heatmaps-virchow2-train",
     username="jiribuchta",
     image="cerit.io/rationai/base:2.0.6",
     cpu=8,

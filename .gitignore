@@ -183,3 +183,6 @@ lightning_logs/
 /output
 /outputs
 *.png
+# Local outputs
+running_pending_jobs.csv
+/tmp_local
