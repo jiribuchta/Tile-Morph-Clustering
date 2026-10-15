@@ -74,6 +74,31 @@ a mixed ductal-lobular tumor scored tile-by-tile can read as the minority
 morphology. If so, the true separation is better than the reported AUC —
 we are grading against imperfect ground truth.
 
+## Outcome of the pathologist review
+
+Both genuine contradictions were **label errors, not model errors**:
+
+- `2020_08267-04-T2` — patient has multiple tumors in both breasts; this
+  block is from the right-breast carcinoma and is genuinely ductal (8500).
+  The table had it assigned to the (lobular) left-breast tumor; the sibling
+  T1 block is the 8520 one. Model was right (score −1.48).
+- `2023_08660-2-T` — genuinely lobular carcinoma; a coding error whose
+  correction never propagated into the database export. Model was right
+  (score +1.63).
+
+With both resolved, the model has no unexplained contradictions on
+well-sampled slides — every remaining error sits near the decision
+boundary.
+
+**Open question:** on mixed-labeled tumors, the pathologist could not
+visually define a difference between the blue- and red-colored tiles. The
+axis clearly separates slide-level labels (AUC 0.972), but its per-tile
+evidence lives in 2560-dimensional foundation-model features, which need
+not correspond to the architectural patterns humans name — the signal may
+be subtle texture/statistics rather than single-file vs gland-forming
+growth. Investigating whether the extreme-scoring tiles from mixed tumors
+are visually distinct is the natural next step.
+
 ## What we ask you to look at
 
 An xOpat report with the model's per-tile score overlaid on each WSI:

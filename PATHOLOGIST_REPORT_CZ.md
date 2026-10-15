@@ -64,5 +64,28 @@ Vzácnější morfologie (netrénované) skórují souvisle na stejné ose: 8522
 (tubulární) a 8504 (kribiformní) k duktálnímu. Osa zřejmě zachycuje biologii
 růstového vzoru, ne jen dvě trénované třídy.
 
+## Výsledek posouzení patologem
+
+Oba skutečné rozpory byly **chyby v označení, ne chyby modelu**:
+
+- `2020_08267-04-T2` — pacientka má více nádorů v obou prsech; tento blok
+  je z karcinomu pravého prsu a je skutečně duktální (8500). V tabulce byl
+  chybně přiřazen k (lobulárnímu) tumoru levého prsu; blok T1 je ten s
+  8520. Model měl pravdu (skóre −1,48).
+- `2023_08660-2-T` — skutečně lobulární karcinom; chyba v kódování, jejíž
+  korekce se nedostala do exportu z databáze. Model měl pravdu (skóre +1,63).
+
+Po vyřešení obou případů model nemá na dobře obsazených sklíčkách žádné
+nevysvětlené rozpory — všechny zbývající chyby leží u rozhodovací hranice.
+
+**Otevřená otázka:** u sklíček se smíšenými labely se patologovi nepodařilo
+vizuálně definovat rozdíl mezi modře a červeně zbarvenými poli. Osa zřetelně
+odděluje labely na úrovni sklíčka (AUC 0,972), ale její políčkové důkazy
+žijí v 2560rozměrných rysech foundation modelu, které nemusí odpovídat
+architektonickým vzorům, které lidé pojmenovávají — signál může být jemná
+textura či statistika, nikoli řetízkový vs glandulární růst. Přirozeným
+dalším krokem je prozkoumat, zda jsou vizuálně odlišná pole s extrémním
+skóre u smíšených tumorů.
+
 *Detaily k dispozici: Virchow2 embeddings, filtr ≥ 0,95, LDA se shrinkage,
 sady Train/Val, výstupy v `/mnt/projects/breast_cancer/tile_morph_clustering/`.*
