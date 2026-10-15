@@ -1,11 +1,12 @@
 from kube_jobs import storage, submit_job
 
+
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Train"
 TILES = "/mnt/projects/breast_cancer/bc/heatmaps/virchow2_heatmaps_train"
-DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction_v4_095_val.npz"
+DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction_v5_095_train.npz"
 # CSV with slide_name + morphology columns for ALL train slides (for evaluation)
 MORPH = "/mnt/projects/breast_cancer/bc/dataframe.csv"
-OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/train_scores_v4_095_train.csv"
+OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores_v5_095_train.csv"
 
 submit_job(
     job_name="tile-morph-lda-train",
