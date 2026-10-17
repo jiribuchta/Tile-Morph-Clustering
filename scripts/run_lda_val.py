@@ -1,15 +1,15 @@
 from kube_jobs import storage, submit_job
 
 
-# Score Val with the v5 direction (trained on Train) -> held-out generalization check
+# Score Val with the v6 direction -> held-out generalization check
 PT_DIR = "/mnt/projects/breast_cancer/bc/tile_embeddings/virchow2/MMCI B20-24 Val"
 TILES = "/mnt/projects/breast_cancer/bc/heatmaps/virchow2_heatmaps_val"
-DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction_v5_095_train.npz"
+DIRECTION = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_direction_v6_095_train.npz"
 MORPH = "/mnt/projects/breast_cancer/bc/dataframe.csv"
-OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores_v5_095_val.csv"
+OUT = "/mnt/projects/breast_cancer/tile_morph_clustering/lda_scores_v6_095_val.csv"
 
 submit_job(
-    job_name="tile-morph-lda-v5-val",
+    job_name="tile-morph-lda-v6-val",
     username="jiribuchta",
     image="cerit.io/rationai/base:2.0.6",
     cpu=8,
