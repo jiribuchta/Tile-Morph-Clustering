@@ -77,6 +77,8 @@ def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
         mask[dy:dy+dh, dx:dx+dw] = np.maximum(mask[dy:dy+dh, dx:dx+dw], val)
 
     # Save as pyramid TIFF (openslide-compatible)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     img = pyvips.Image.new_from_array(mask)
     img.tiffsave(out_path, tile=True, pyramid=True, bigtiff=True, compression="lzw")
     print(f"Saved: {out_path} ({w}x{h})")
