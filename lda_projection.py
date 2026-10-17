@@ -22,6 +22,46 @@ def read_tiles(p):
     return pd.read_csv(p) if str(p).endswith(".csv") else pd.read_parquet(p)
 
 
+def load_slide(pt_file: Path):
+    """Load (embeddings, xs, ys) from a per-slide .pt; xs/ys are None if absent."""
+    data = torch.load(pt_file, map_location="cpu", weights_only=False)
+    if isinstance(data, dict):
+        emb = next((data[k] for k in ("embeddings", "embedding", "emb", "features") if k in data), None)
+        xs = next((data[k] for k in ("x", "xs", "x_coords") if k in data), None)
+        ys = next((data[k] for k in ("y", "ys", "y_coords") if k in data), None)
+        if emb is None:
+            raise SystemExit(f"{pt_file.name}: no embeddings key in {list(data.keys())}")
+        return (emb.numpy().astype(np.float32),
+                None if xs is None else np.asarray(xs, dtype=np.int64),
+                None if ys is None else np.asarray(ys, dtype=np.int64))
+    return data.numpy().astype(np.float32), None, None
+
+
+def select_tiles(emb, xs, ys, slide_tiles):
+    """Embedding rows matching slide_tiles' (x, y), row-aligned with slide_tiles.
+
+    The .pt holds ALL tissue tiles; slide_tiles (carcinoma-filtered) is a subset.
+    Joining by coords is load-bearing: emb[:n] would pair the first n tiles of
+    the whole slide with the carcinoma tiles' coords -- a spatial scramble that
+    shows up as banded (vertical-stripe) artifacts in the masks.
+    Both return paths copy (fancy index / ascontiguousarray), so the full-slide
+    array is never pinned in all_embs.
+    """
+    if xs is None or ys is None:
+        print(f"  [warn] no tile coords in .pt: prefix alignment fallback "
+              f"({emb.shape[0]} emb rows vs {len(slide_tiles)} tiles) -- coords untrusted!")
+        n_keep = min(emb.shape[0], len(slide_tiles))
+        return np.ascontiguousarray(emb[:n_keep]), slide_tiles.iloc[:n_keep]
+    pos = {}
+    for i, (x, y) in enumerate(zip(xs.tolist(), ys.tolist())):
+        pos.setdefault((x, y), i)
+    try:
+        idx = np.array([pos[(int(r.x), int(r.y))] for r in slide_tiles.itertuples()])
+    except KeyError as e:
+        raise SystemExit(f"tile coords {e} not found in .pt -- heatmap/embedding coords mismatch")
+    return emb[idx], slide_tiles
+
+
 def evaluate_scores(df, morphology_csv, min_tiles=100):
     """Slide-level eval of tile scores vs morphology (8500 vs 8520).
 
@@ -121,22 +161,15 @@ def main():
             slide_tiles = tiles_df[tiles_df["slide_name"] == slide_name]
             if slide_tiles.empty:
                 continue
-            emb = torch.load(pt_file, map_location="cpu", weights_only=False)
-            if isinstance(emb, dict):
-                for k in ("embeddings", "embedding", "emb", "features"):
-                    if k in emb:
-                        emb = emb[k]
-                        break
-            emb = emb.numpy().astype(np.float32)
-            n_keep = min(emb.shape[0], len(slide_tiles))
-            emb = emb[:n_keep]
+            emb, xs, ys = load_slide(pt_file)
+            emb, slide_tiles = select_tiles(emb, xs, ys, slide_tiles)
             # L2 normalize + project
             norms = np.linalg.norm(emb, axis=1, keepdims=True)
             norms[norms == 0] = 1
             emb /= norms
             scores = emb @ direction * scale + offset
-            for i, (_, trow) in enumerate(slide_tiles.iterrows()):
-                rows.append((slide_name, int(trow["x"]), int(trow["y"]), scores[i].item()))
+            for trow, s in zip(slide_tiles.itertuples(), scores):
+                rows.append((slide_name, int(trow.x), int(trow.y), float(s)))
 
         out_df = pd.DataFrame(rows, columns=["slide_name", "x", "y", "value"])
         out_df.to_csv(args.out, index=False)
@@ -186,28 +219,17 @@ def main():
             continue
         label = 0 if morph_map[slide_name] == "8500" else 1
 
-        emb = torch.load(pt_file, map_location="cpu", weights_only=False)
-        if isinstance(emb, dict):
-            for k in ("embeddings", "embedding", "emb", "features"):
-                if k in emb:
-                    emb = emb[k]
-                    break
-        emb = emb.numpy().astype(np.float32)
+        emb, xs, ys = load_slide(pt_file)
 
-        # Filter to carcinoma tiles
+        # Filter to carcinoma tiles (join by coords -- see select_tiles)
         slide_tiles = tiles_by_slide.get(slide_name)
         if slide_tiles is None or slide_tiles.empty:
             continue
-        n_keep = min(emb.shape[0], len(slide_tiles))
-        if args.max_tiles_per_slide and n_keep > args.max_tiles_per_slide:
-            sel = np.sort(rng.choice(n_keep, args.max_tiles_per_slide, replace=False))
+        emb, slide_tiles = select_tiles(emb, xs, ys, slide_tiles)
+        if args.max_tiles_per_slide and len(slide_tiles) > args.max_tiles_per_slide:
+            sel = np.sort(rng.choice(len(slide_tiles), args.max_tiles_per_slide, replace=False))
             emb = emb[sel]  # fancy index = copy, full-slide base is freed
             slide_tiles = slide_tiles.iloc[sel]
-        else:
-            # .copy() is load-bearing: a view would pin the FULL-slide array in
-            # all_embs (OOM'd at 64Gi with ~3GB of actual tiles)
-            emb = emb[:n_keep].copy()
-            slide_tiles = slide_tiles.iloc[:n_keep]
 
         all_embs.append(emb)
         all_labels.extend([label] * emb.shape[0])
