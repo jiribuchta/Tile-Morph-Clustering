@@ -44,9 +44,11 @@ level-1 pixel space). The current main line:
    `tile_morph_clustering/`); submit the serving job from there.
 
 `make_heatmap_thumb.py` gives a fast JPEG preview of tile scores on a WSI
-thumbnail (no BigTIFF needed). `show_masks.py` and the slide-list/
-morphology helpers were removed with the k-means era — see git history if
-you need them back.
+thumbnail (no BigTIFF needed). `make_tile_gallery.py` renders, per slide,
+the N highest- and N lowest-scoring tiles as a JPEG grid (top = lobular
+side, bottom = ductal side) — quick eyeball check of what the axis responds
+to. `show_masks.py` and the slide-list/morphology helpers were removed with
+the k-means era — see git history if you need them back.
 
 ## Data locations (cluster mounts)
 
