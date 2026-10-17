@@ -1,11 +1,19 @@
-"""Create full-resolution mask TIFF from tile scores CSV.
+"""Create full-resolution mask TIFFs from tile scores CSV.
+
+Rasterizes at level 1 (the tile coords' native space) and upscales 2x with
+pixel replication -- byte-identical to rasterizing at level 0 directly
+(tiles are constant-color, even-aligned rects), but with 4x less RAM and
+4x less rasterization work.
+
+One CSV read per invocation, any number of slides (--slide all | name1,name2);
+resumable: existing .tiffs are skipped.
 
 Usage:
     python make_mask_tiff.py \
         --tiles lda_scores.csv \
         --wsi-root /mnt/bioptic_tree \
-        --slide 2020_00479-01-T \
-        --out mask_2020_00479-01-T.tiff
+        --slide all \
+        --out masks_v6
 """
 
 import argparse
@@ -16,84 +24,75 @@ import openslide
 import pandas as pd
 import pyvips
 
+TILE = 224  # tile size in level-1 pixels
+SCALE = 4.0  # LDA score -4..+4 -> 0..255 (global; 8500 mean=-1.46, 8520 mean=+1.37)
 
-def make_mask(csv_path: str, slide_name: str, wsi_root: str, out_path: str):
-    """Create a full-resolution (level 0) mask TIFF from tile scores."""
-    df = pd.read_csv(csv_path) if str(csv_path).endswith(".csv") else pd.read_parquet(csv_path)
-    slide_tiles = df[df["slide_name"] == slide_name]
-    if slide_tiles.empty:
-        print(f"[skip] no tiles for {slide_name}")
-        return
 
-    # Find WSI
+def find_wsi(slide_name: str, wsi_root: str) -> Path | None:
     record = slide_name.split("-")[0]
     year, nn, nnn = record[:4], record[5:7], record[7:10]
     slide_dir = Path(wsi_root) / year / nn / nnn / slide_name
-    wsi_path = None
     for ext in (".tiff", ".mrxs.tiff", ".ndpi", ".svs"):
         candidate = slide_dir / f"{slide_name}{ext}"
         if candidate.exists():
-            wsi_path = candidate
-            break
+            return candidate
+    return None
+
+
+def make_mask(slide_tiles: pd.DataFrame, slide_name: str, wsi_root: str, out_dir: Path):
+    """Create a full-resolution (level 0) mask TIFF for one slide."""
+    wsi_path = find_wsi(slide_name, wsi_root)
     if wsi_path is None:
-        print(f"[skip] WSI not found in {slide_dir}")
+        print(f"[skip] WSI not found for {slide_name}")
         return
 
-    # Get full WSI dimensions (level 0)
     slide = openslide.OpenSlide(str(wsi_path))
-    w, h = slide.dimensions
+    w, h = slide.dimensions  # level 0
     slide.close()
-    print(f"WSI: {w}x{h}")
 
-    # Tile coords are in level-1 space. Scale to level 0.
-    # Level 0 is 2x level 1 for most scanners.
-    scale = w / (w / 2)  # = 2, but let's be explicit
-    # Actually: level 0 width = w, level 1 width = w/2
-    # Tile x is in level-1 pixels, so level-0 x = x * (w / (w/2)) = x * 2
-    scale_x = 2.0
-    scale_y = 2.0
+    # Rasterize at level 1 (tile coords' space), then 2x pixel replication.
+    mw, mh = (w + 1) // 2, (h + 1) // 2
+    mask = np.zeros((mh, mw), dtype=np.uint8)
+    for row in slide_tiles.itertuples():
+        dx = min(max(int(row.x), 0), max(0, mw - TILE))
+        dy = min(max(int(row.y), 0), max(0, mh - TILE))
+        val = np.uint8(np.clip(row.value / SCALE, -1.0, 1.0) * 127.5 + 127.5)
+        region = mask[dy:dy+TILE, dx:dx+TILE]
+        np.maximum(region, val, out=region)
 
-    # Create mask at level 0 resolution (uint8 to save memory)
-    mask = np.zeros((h, w), dtype=np.uint8)
+    img = pyvips.Image.new_from_array(mask).zoom(2, 2)
+    if img.width != w or img.height != h:  # odd level-0 dims
+        img = img.crop(0, 0, w, h)
+    out_path = out_dir / f"{slide_name}.tiff"
+    img.tiffsave(str(out_path), tile=True, pyramid=True, bigtiff=True, compression="lzw")
 
-    # Get tile size in level-1 pixels (default 224)
-    tile_size = 224
-
-    # Fixed global scale (v5 training stats: 8500 mean=-1.46, 8520 mean=+1.37,
-    # std ~= 1.8). Score -4..+4 maps to 0..255; same pixel value = same meaning
-    # on every slide. 128 (white) = genuinely ambiguous.
-    SCALE = 4.0
     vals = slide_tiles["value"].values
-
-    for i, (_, row) in enumerate(slide_tiles.iterrows()):
-        dx = int(row["x"] * scale_x)
-        dy = int(row["y"] * scale_y)
-        dw = int(tile_size * scale_x)
-        dh = int(tile_size * scale_y)
-        dx = min(max(dx, 0), w - dw)
-        dy = min(max(dy, 0), h - dh)
-        val = np.clip(vals[i] / SCALE, -1.0, 1.0) * 127.5 + 127.5
-        val = val.astype(np.uint8)
-        mask[dy:dy+dh, dx:dx+dw] = np.maximum(mask[dy:dy+dh, dx:dx+dw], val)
-
-    # Save as pyramid TIFF (openslide-compatible)
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img = pyvips.Image.new_from_array(mask)
-    img.tiffsave(out_path, tile=True, pyramid=True, bigtiff=True, compression="lzw")
-    print(f"Saved: {out_path} ({w}x{h})")
-    print(f"  LDA score range: [{vals.min():.3f}, {vals.max():.3f}]")
+    print(f"{slide_name}: {len(slide_tiles)} tiles, score range "
+          f"[{vals.min():.2f}, {vals.max():.2f}] -> {out_path} ({w}x{h})", flush=True)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tiles", required=True, help="CSV with slide_name,x,y,value")
+    ap.add_argument("--tiles", required=True, help="CSV/parquet with slide_name,x,y,value")
     ap.add_argument("--wsi-root", required=True)
-    ap.add_argument("--slide", required=True, help="slide name")
-    ap.add_argument("--out", required=True, help="output .tiff path")
+    ap.add_argument("--slide", required=True, help="slide name, comma-separated list, or 'all'")
+    ap.add_argument("--out", required=True, help="output dir (one .tiff per slide)")
     args = ap.parse_args()
 
-    make_mask(args.tiles, args.slide, args.wsi_root, args.out)
+    df = pd.read_csv(args.tiles) if str(args.tiles).endswith(".csv") else pd.read_parquet(args.tiles)
+    slides = df["slide_name"].unique() if args.slide == "all" else [s.strip() for s in args.slide.split(",")]
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for si, slide_name in enumerate(slides):
+        if (out_dir / f"{slide_name}.tiff").exists():
+            continue  # resume
+        slide_tiles = df[df["slide_name"] == slide_name]
+        if slide_tiles.empty:
+            print(f"[skip] no tiles for {slide_name}")
+            continue
+        make_mask(slide_tiles, slide_name, args.wsi_root, out_dir)
+        print(f"  {si+1}/{len(slides)}", flush=True)
 
 
 if __name__ == "__main__":
