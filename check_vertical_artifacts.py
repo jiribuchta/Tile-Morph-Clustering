@@ -97,9 +97,12 @@ def main():
         new = (emb_sel / norms) @ direction * scale + offset
 
         rho = stats.spearmanr(old["value"].values, new).statistic
-        print(f"  old vs realigned: Spearman rho={rho:.3f}, "
-              f"mean|diff|={np.abs(old['value'].values - new).mean():.3f} "
-              f"({'MISALIGNED' if rho < 0.9 else 'was aligned'})")
+        if len(old) < 10:
+            print(f"  old vs realigned: only {len(old)} tiles -- rho not meaningful")
+        else:
+            print(f"  old vs realigned: Spearman rho={rho:.3f}, "
+                  f"mean|diff|={np.abs(old['value'].values - new).mean():.3f} "
+                  f"({'MISALIGNED' if rho < 0.9 else 'was aligned'})")
 
         # vertical structure in corrected scores (x columns vs y rows)
         x, y = tiles["x"].values, tiles["y"].values
@@ -117,11 +120,13 @@ def main():
                   f"row-mean var={rv:.6f} (p={rp:.3f})"
                   + ("  <- detector sees stripes" if cp < 0.05 and cp < rp else ""))
 
-        # rendering-gap check for make_mask_tiff (uniform 224 stride = no gaps)
+        # rendering-gap check: embeddings are extracted with overlapping
+        # 224-px tiles (stride 112), so a gap only exists if min stride > 224;
+        # large max strides are just tumor-free regions (expected).
         dx = np.diff(np.unique(x))
         if len(dx):
             print(f"  tile x stride: min={dx.min()}, max={dx.max()}"
-                  + ("" if dx.min() == dx.max() else "  <- non-uniform, check mask gaps"))
+                  + ("  <- GAPS: min stride exceeds tile size" if dx.min() > TILE else ""))
 
         corrected.append(pd.DataFrame({
             "slide_name": slide_name, "x": x, "y": y, "value": new}))
