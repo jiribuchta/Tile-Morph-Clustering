@@ -1,6 +1,12 @@
 # Findings: AI-based ductal vs lobular morphology from WSI tile embeddings
 
-**Prepared for pathologist review — v5, October 2025**
+**Prepared for pathologist review — v6, October 2025**
+
+*v6 note: all scores were regenerated after fixing a tile-alignment bug in
+the scoring pipeline (tile scores were written at the wrong coordinates
+when filtering to carcinoma tiles). The pathologist review below was
+performed on the v5 masks; both of its verdicts were re-verified and hold
+under v6 — with stronger scores.*
 
 ## The question
 
@@ -34,45 +40,40 @@ tiles, i.e. essentially no tumor found on them):
 
 | Slide-level metric (Val, n=196) | value |
 |---|---|
-| AUC (ranking: lobular scores above ductal) | **0.972** |
-| Accuracy at the natural threshold (score > 0) | **94.4%** |
-| Balanced accuracy | 95.3% |
+| AUC (ranking: lobular scores above ductal) | **0.976** |
+| Accuracy at the natural threshold (score > 0) | **98.0%** |
+| Balanced accuracy | 96.2% |
 
 Interpretation: given one random ductal and one random lobular slide, the model
-ranks them correctly ~97% of the time. This is from tile morphology alone.
+ranks them correctly ~98% of the time. This is from tile morphology alone.
 
 (Caveat: the lobular side is 31 slides, so the AUC carries a confidence
 interval of roughly ±0.03.)
 
 ## The interesting part: the structure of the errors
 
-55/293 slides land on the wrong side of the threshold. When we looked at
-them, they split into three distinct groups:
+97 of the 293 Val slides carry almost no detectable tumor (median 4
+carcinoma tiles) — mostly `N` (negative) blocks per the bioptic-tree
+naming scheme (`T` = tumor, `N` = negative, `M` = metastases) that inherit
+their case's 8500/8520 label via the record-prefix join. Their mean score
+is noise, so they are excluded (< 100 tiles); the headline numbers above are
+the remaining 196 slides.
 
-1. **A third of Val slides are negative blocks, correctly empty.** Slides
-whose suffix is `N` (negative sample per the bioptic-tree naming scheme;
-`T` = tumor, `M` = metastases) carry almost no carcinoma tiles — median 4
-detected — because there is no tumor on them. The carcinoma detector is
-*right*; these slides simply inherit their case's 8500/8520 label via the
-record-prefix join and so landed in the eval. Averaging a handful of tiles
-produced noise scores, and 7 of our 9 strongest "contradictions" were
-exactly such slides. With slides lacking sufficient detected tumor (fewer
-than 100 tiles) excluded, the headline numbers improve from AUC 0.878 / 81%
-to **0.972 / 94%**.
+Of those 196, only **4** land on the wrong side of the threshold:
 
-2. **Two well-sampled slides contradict the label.**
-`2020_08267-04-T2` (8520 labeled, 27k tumor tiles, mean score -1.48 = solidly
-ductal) and `2023_08660-2-T` (8500 labeled, 46k tiles, mean +1.63 = solidly
-lobular). These are the genuine contradictions: mixed tumors or morphology
-coding differences in the clinical table.
+1. **Two are the known label errors** (see the review outcome below):
+   `2020_08267-04-T2` (8520 labeled, 27k tumor tiles, mean score −3.28 =
+   solidly ductal) and `2023_08660-2-T` (8500 labeled, 46k tiles, mean
+   +3.90 = solidly lobular). Pathologist review confirmed both are table/
+   coding errors; the model was right on both.
+2. **Two sit on the boundary**: `2021_05355-02-T` (8520 labeled, mean
+   −0.20) and `2024_00961-2-N` (8500 labeled, mean +0.05 — an `N` block
+   inheriting its case label, 580 tiles). Genuinely ambiguous, exactly
+   what overlapping distributions produce.
 
-3. **The remaining ~45 errors sit near the boundary (|score| < 0.5)** —
-genuinely ambiguous slides, exactly what overlapping distributions produce.
-
-Our hypothesis for group 2: the label records only the dominant component;
-a mixed ductal-lobular tumor scored tile-by-tile can read as the minority
-morphology. If so, the true separation is better than the reported AUC —
-we are grading against imperfect ground truth.
+In other words: on well-sampled slides the model has **no unexplained
+errors** — every wrong call is a documented label error or a coin-flip
+at the decision boundary. We are grading against imperfect ground truth.
 
 ## Outcome of the pathologist review
 
@@ -81,23 +82,26 @@ Both genuine contradictions were **label errors, not model errors**:
 - `2020_08267-04-T2` — patient has multiple tumors in both breasts; this
   block is from the right-breast carcinoma and is genuinely ductal (8500).
   The table had it assigned to the (lobular) left-breast tumor; the sibling
-  T1 block is the 8520 one. Model was right (score −1.48).
+  T1 block is the 8520 one. Model was right (v6 score −3.28).
 - `2023_08660-2-T` — genuinely lobular carcinoma; a coding error whose
   correction never propagated into the database export. Model was right
-  (score +1.63).
+  (v6 score +3.90).
 
 With both resolved, the model has no unexplained contradictions on
 well-sampled slides — every remaining error sits near the decision
 boundary.
 
 **Open question:** on mixed-labeled tumors, the pathologist could not
-visually define a difference between the blue- and red-colored tiles. The
-axis clearly separates slide-level labels (AUC 0.972), but its per-tile
-evidence lives in 2560-dimensional foundation-model features, which need
-not correspond to the architectural patterns humans name — the signal may
-be subtle texture/statistics rather than single-file vs gland-forming
-growth. Investigating whether the extreme-scoring tiles from mixed tumors
-are visually distinct is the natural next step.
+visually define a difference between the blue- and red-colored tiles. Note
+that this review was done on the v5 masks, which carried the tile-alignment
+bug — the blue/red values sat at wrong coordinates, which may itself
+explain why no visual pattern was found. The v6 masks put each score at
+its true tile; whether the extreme-scoring tiles are visually distinct
+deserves a fresh look. The axis clearly separates slide-level labels
+(AUC 0.976), but its per-tile evidence lives in 2560-dimensional
+foundation-model features, which need not correspond to the architectural
+patterns humans name — the signal may be subtle texture/statistics rather
+than single-file vs gland-forming growth.
 
 ## What we ask you to look at
 
@@ -109,8 +113,8 @@ genuine contradictions first, then a sample of ordinary slides:
 
 | slide | labeled | model score | tumor tiles | notes |
 |---|---|---|---|---|
-| 2020_08267-04-T2 | 8520 | −1.48 | 27,455 | solidly ductal despite lobular label; sibling slide 2020_08267-03-N2 has almost no detectable tumor |
-| 2023_08660-2-T | 8500 | +1.63 | 45,962 | solidly lobular despite ductal label |
+| 2020_08267-04-T2 | 8520 | −3.28 | 27,455 | solidly ductal despite lobular label; sibling slide 2020_08267-03-N2 has almost no detectable tumor |
+| 2023_08660-2-T | 8500 | +3.90 | 45,962 | solidly lobular despite ductal label |
 
 Three questions per slide:
 

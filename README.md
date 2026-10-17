@@ -6,7 +6,7 @@ project). The one question everything here answers: **can tile embeddings
 morphology?**
 
 Short answer: yes. A linear projection trained on carcinoma tiles ranks
-held-out slides with **AUC 0.972, 94.4% accuracy** (see
+held-out slides with **AUC 0.976, 98.0% accuracy** (see
 [PATHOLOGIST_REPORT.md](PATHOLOGIST_REPORT.md), Czech version in
 `PATHOLOGIST_REPORT_CZ.md`).
 
@@ -35,15 +35,18 @@ level-1 pixel space). The current main line:
    existing scores CSV without touching the embeddings.
 5. **Masks** — `make_mask_tiff.py` rasterizes a scores CSV into a
    full-resolution grayscale BigTIFF (blue/red via the report's colormap;
-   score ±4 maps to 0–255). One slide per call; `scripts/run_masks.py`
-   loops a whole CSV on the cluster.
+   score ±4 maps to 0–255). `--slide` takes one name, a comma list or `all`
+   (one CSV read, resumable per slide; rasterized at level 1 + 2x pixel
+   replication — identical output, 4x less RAM). `scripts/run_masks.py`
+   runs the whole Val CSV on the cluster.
 6. **xOpat report** — `make_report_config_lda.py` builds the report YAML
    from a masks dir (the generated configs live on the cluster under
    `tile_morph_clustering/`); submit the serving job from there.
 
-`make_heatmap_thumb.py` and `show_masks.py` (quick previews) and the
-slide-list/morphology helpers were removed with the k-means era — see git
-history if you need them back.
+`make_heatmap_thumb.py` gives a fast JPEG preview of tile scores on a WSI
+thumbnail (no BigTIFF needed). `show_masks.py` and the slide-list/
+morphology helpers were removed with the k-means era — see git history if
+you need them back.
 
 ## Data locations (cluster mounts)
 
@@ -80,11 +83,17 @@ Monitoring: pods land in namespace `rationai-jobs-ns`.
 
 ## Results so far
 
-- `lda_direction_v5_095_train.npz` — trained on Train, min-tile 0.95,
-  500-tile cap per slide (memory).
-- Val scoring (`lda_scores_v5_095_val.csv`): 196 well-sampled labeled slides
-  → AUC 0.972, acc@0 94.4%, balanced 95.3%. 97 excluded slides are mostly
+- `lda_direction_v6_095_train.npz` — trained on Train, min-tile 0.95,
+  500-tile cap per slide (memory). v6 fixed a tile-alignment bug: v5 and
+  earlier paired embedding rows with the wrong tile coordinates when
+  filtering to carcinoma tiles, so scores were spatially scrambled (the
+  cause of the vertical-stripe mask artifacts). v5 numbers are invalid —
+  see `check_vertical_artifacts.py`.
+- Val scoring (`lda_scores_v6_095_val.csv`): 196 well-sampled labeled slides
+  → AUC 0.976, acc@0 98.0%, balanced 96.2%. 97 excluded slides are mostly
   negative (`N`) blocks — detector correctly finds no tumor there.
-- Two genuine contradictions for pathologist review:
-  `2020_08267-04-T2` (8520, scores −1.48) and `2023_08660-2-T`
-  (8500, scores +1.63).
+- Only 4 wrong slides: the two known label errors — `2020_08267-04-T2`
+  (8520-labeled, scores −3.28, pathologist-confirmed ductal) and
+  `2023_08660-2-T` (8500-labeled, +3.90, confirmed lobular) — plus two
+  near-boundary cases (`2021_05355-02-T` −0.20, `2024_00961-2-N` +0.05,
+  an N block inheriting its case label).
