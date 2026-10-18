@@ -20,6 +20,8 @@ import openslide
 import pandas as pd
 from PIL import Image
 
+from make_mask_tiff import find_wsi
+
 # Same global scale as make_mask_tiff: score -4..+4 -> 0..255
 SCORE_SCALE = 4.0
 # xOpat report colormap: blue (#2166AC) -> light (#F7F7F7) -> red (#B2182B)
@@ -41,17 +43,9 @@ def make_thumb(csv_path: str, slide_name: str, wsi_root: str, out_dir: Path,
         return
 
     # Find WSI
-    record = slide_name.split("-")[0]
-    year, nn, nnn = record[:4], record[5:7], record[7:10]
-    slide_dir = Path(wsi_root) / year / nn / nnn / slide_name
-    wsi_path = None
-    for ext in (".tiff", ".mrxs.tiff", ".ndpi", ".svs"):
-        candidate = slide_dir / f"{slide_name}{ext}"
-        if candidate.exists():
-            wsi_path = candidate
-            break
+    wsi_path = find_wsi(slide_name, wsi_root)
     if wsi_path is None:
-        print(f"  [skip] WSI not found in {slide_dir}")
+        print(f"  [skip] WSI not found for {slide_name}")
         return
 
     # Read a ~2000px-wide level
@@ -109,10 +103,17 @@ def main():
     ap.add_argument("--out", default="thumbs/", help="output dir for JPEGs")
     ap.add_argument("--slides", help="comma-separated slide names (default: all in CSV)")
     ap.add_argument("--band", action="store_true", help="hide ambiguous middle band (like xOpat)")
+    ap.add_argument("--morphology", default=None,
+                    help="CSV with slide_id + morphology; unlabeled slides warn but are still processed")
     args = ap.parse_args()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    labeled = set()
+    if args.morphology:
+        m = pd.read_csv(args.morphology)
+        labeled = set(m["slide_id"].astype(str))
 
     if args.slides:
         slides = [s.strip() for s in args.slides.split(",")]
@@ -122,6 +123,8 @@ def main():
 
     print(f"{len(slides)} slides -> {out_dir}")
     for s in slides:
+        if labeled and s not in labeled:
+            print(f"[warn] {s}: no morphology label — computing heatmap anyway")
         make_thumb(args.tiles, s, args.wsi_root, out_dir, band=args.band)
 
 

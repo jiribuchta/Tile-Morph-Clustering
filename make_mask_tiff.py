@@ -26,9 +26,13 @@ import pyvips
 
 TILE = 224  # tile size in level-1 pixels
 SCALE = 4.0  # LDA score -4..+4 -> 0..255 (global; 8500 mean=-1.46, 8520 mean=+1.37)
+MAMMAPRINT_ROOT = Path("/mnt/data/MOU/breast/mammaprint")  # flat P-slide storage
 
 
 def find_wsi(slide_name: str, wsi_root: str) -> Path | None:
+    p = MAMMAPRINT_ROOT / f"{slide_name}.mrxs"  # mammaprint P-slides: flat dir
+    if p.exists():
+        return p
     record = slide_name.split("-")[0]
     year, nn, nnn = record[:4], record[5:7], record[7:10]
     slide_dir = Path(wsi_root) / year / nn / nnn / slide_name
@@ -77,7 +81,14 @@ def main():
     ap.add_argument("--wsi-root", required=True)
     ap.add_argument("--slide", required=True, help="slide name, comma-separated list, or 'all'")
     ap.add_argument("--out", required=True, help="output dir (one .tiff per slide)")
+    ap.add_argument("--morphology", default=None,
+                    help="CSV with slide_id + morphology; unlabeled slides warn but are still processed")
     args = ap.parse_args()
+
+    labeled = set()
+    if args.morphology:
+        m = pd.read_csv(args.morphology)
+        labeled = set(m["slide_id"].astype(str))
 
     df = pd.read_csv(args.tiles) if str(args.tiles).endswith(".csv") else pd.read_parquet(args.tiles)
     slides = df["slide_name"].unique() if args.slide == "all" else [s.strip() for s in args.slide.split(",")]
@@ -91,6 +102,8 @@ def main():
         if slide_tiles.empty:
             print(f"[skip] no tiles for {slide_name}")
             continue
+        if labeled and slide_name not in labeled:
+            print(f"[warn] {slide_name}: no morphology label — computing mask anyway")
         make_mask(slide_tiles, slide_name, args.wsi_root, out_dir)
         print(f"  {si+1}/{len(slides)}", flush=True)
 
