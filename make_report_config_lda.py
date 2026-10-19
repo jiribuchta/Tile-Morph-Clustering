@@ -11,7 +11,9 @@ from pathlib import Path
 
 
 def wsi_path(name: str, root: str) -> str:
-    """Derive WSI path from slide name (bioptic tree structure)."""
+    """Derive WSI path from slide name."""
+    if name.startswith("P"):  # mammaprint P-slides live in a flat dir
+        return f"/mnt/data/MOU/breast/mammaprint/{name}.mrxs"
     year = name[:4]
     mmddd = name[5:10]
     month = mmddd[:2]
